@@ -1,4 +1,5 @@
 import os
+import ssl
 import smtplib
 import threading
 from email.mime.text import MIMEText
@@ -32,35 +33,49 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
+# Email Settings para kay Admin
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'emmanuelbarbadillo05@gmail.com')
 MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com')
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
+    """Nagpapadala ng email sa admin sa background gamit ang SSL at TLS fallback"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
-        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
+        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set sa Render Environment.")
         return
 
     def _send():
-        try:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"CMDI Canteen System <{MAIL_USERNAME}>"
-            msg['To'] = ADMIN_EMAIL
-            msg.attach(MIMEText(html_content, 'html'))
+        clean_password = MAIL_PASSWORD.replace(' ', '').strip()
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = f"CMDI Canteen System <{MAIL_USERNAME}>"
+        msg['To'] = ADMIN_EMAIL
+        msg.attach(MIMEText(html_content, 'html'))
 
-            clean_password = MAIL_PASSWORD.replace(' ', '').strip()
+        # Subok 1: SSL Port 465 (Pinakamabilis at hindi madalas ma-block)
+        try:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=15) as server:
+                server.login(MAIL_USERNAME, clean_password)
+                server.send_message(msg)
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via SSL)")
+            return
+        except Exception as e_ssl:
+            print(f"[EMAIL SSL Retry TLS]: {e_ssl}")
+
+        # Subok 2: TLS Port 587 fallback
+        try:
             with smtplib.SMTP('smtp.gmail.com', 587, timeout=15) as server:
                 server.starttls()
                 server.login(MAIL_USERNAME, clean_password)
                 server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL}")
-        except Exception as e:
-            print(f"[EMAIL ERROR] Error sa email: {e}")
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via TLS)")
+        except Exception as e_tls:
+            print(f"[EMAIL ERROR] Hindi naipadala ang email: {e_tls}")
 
     threading.Thread(target=_send, daemon=True).start()
 
-# --- MODELS ---
+# --- DATABASE MODELS ---
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -125,6 +140,68 @@ def current_user():
 @app.context_processor
 def inject_user():
     return dict(current_user=current_user(), now=datetime.utcnow())
+
+# --- DIAGNOSTIC ROUTE PARA SA EMAIL ---
+@app.route('/test-email')
+def test_email():
+    """Diretsong ipapakita sa screen kung bakit hindi nakakapag-email ang Google"""
+    clean_password = (MAIL_PASSWORD or '').replace(' ', '').strip()
+    
+    status_html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 650px; margin: 40px auto; padding: 25px; border: 2px solid #0d3b66; border-radius: 10px;">
+        <h2 style="color: #0d3b66; margin-top: 0;">CMDI Canteen - Email Diagnostic Test</h2>
+        <table style="width: 100%; margin-bottom: 20px;">
+            <tr><td><strong>ADMIN_EMAIL:</strong></td><td>{ADMIN_EMAIL}</td></tr>
+            <tr><td><strong>MAIL_USERNAME:</strong></td><td>{MAIL_USERNAME or '<span style=\"color:red;\">HINDI NAKA-SET</span>'}</td></tr>
+            <tr><td><strong>MAIL_PASSWORD:</strong></td><td>{'Naka-set (' + str(len(clean_password)) + ' characters)' if clean_password else '<span style=\"color:red;\">HINDI NAKA-SET</span>'}</td></tr>
+        </table>
+    """
+    
+    if not MAIL_USERNAME or not clean_password:
+        status_html += """
+        <div style="background-color: #ffebee; color: #c62828; padding: 15px; border-radius: 6px;">
+            <strong>ERROR:</strong> Kulang ang Environment Variables sa Render!<br>
+            Pumunta sa Render -> Canteen-ordering-systems-6 -> Environment.<br>
+            Idagdag ang <code>MAIL_USERNAME</code> at <code>MAIL_PASSWORD</code>.
+        </div></div>
+        """
+        return status_html
+
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = "[TEST] CMDI Canteen System Notification Test"
+    msg['From'] = f"CMDI Canteen <{MAIL_USERNAME}>"
+    msg['To'] = ADMIN_EMAIL
+    msg.attach(MIMEText("<h3>Matagumpay ang Email Test ng CMDI Canteen!</h3><p>Nakatanggap ka ng test notification. Gumagana na ang email para sa mga orders!</p>", 'html'))
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
+            server.login(MAIL_USERNAME, clean_password)
+            server.send_message(msg)
+        status_html += f"""
+        <div style="background-color: #e8f5e9; color: #2e7d32; padding: 15px; border-radius: 6px;">
+            <strong>SUCCESS!</strong> Matagumpay na naipadala ang test email kay <strong>{ADMIN_EMAIL}</strong>!<br>
+            Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.
+        </div></div>
+        """
+        return status_html
+    except smtplib.SMTPAuthenticationError as auth_err:
+        status_html += f"""
+        <div style="background-color: #ffebee; color: #c62828; padding: 15px; border-radius: 6px;">
+            <strong>AUTHENTICATION ERROR:</strong> Tinanggihan ni Google ang password!<br><br>
+            <em>Dahilan:</em> Baka ang personal mong password sa Gmail ang nailagay mo sa halip na ang <strong>16-letter Google App Password</strong>.<br>
+            Kumuha ng App Password sa: <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>.<br>
+            <small style="color: #666;">Google Error Code: {auth_err}</small>
+        </div></div>
+        """
+        return status_html
+    except Exception as e:
+        status_html += f"""
+        <div style="background-color: #fff3e0; color: #e65100; padding: 15px; border-radius: 6px;">
+            <strong>ERROR:</strong> {e}
+        </div></div>
+        """
+        return status_html
 
 # --- ROUTES ---
 @app.route('/')
@@ -300,6 +377,7 @@ def checkout():
     db.session.commit()
     session.pop('cart', None)
 
+    # --- EMAIL NOTIFICATION SA ADMIN ---
     items_rows = "".join([
         f"<tr>"
         f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.name}</td>"
