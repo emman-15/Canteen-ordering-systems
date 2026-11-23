@@ -12,13 +12,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__, template_folder='.')
 app.secret_key = os.environ.get('SECRET_KEY', 'cmdi_canteen_super_secret_key_2026')
 
-# Suportahan ang root folder at templates folder
 app.jinja_loader = ChoiceLoader([
     FileSystemLoader('.'),
     FileSystemLoader('templates')
 ])
 
-# Database Configuration (Neon PostgreSQL o fallback sa SQLite)
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///canteen.db')
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
@@ -34,13 +32,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
-# Email Settings para kay Admin
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'emmanuelbarbadillo05@gmail.com')
 MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com')
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin sa background thread"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
         return
@@ -58,13 +54,13 @@ def send_admin_email_async(subject, html_content):
                 server.starttls()
                 server.login(MAIL_USERNAME, clean_password)
                 server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang order email kay {ADMIN_EMAIL}")
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL}")
         except Exception as e:
-            print(f"[EMAIL ERROR] Hindi naipadala ang email: {e}")
+            print(f"[EMAIL ERROR] Error sa email: {e}")
 
     threading.Thread(target=_send, daemon=True).start()
 
-# --- DATABASE MODELS ---
+# --- MODELS ---
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -121,7 +117,6 @@ class OrderItem(db.Model):
     price = db.Column(db.Float, nullable=False)
     menu_item = db.relationship('MenuItem')
 
-# Helper Functions
 def current_user():
     if 'user_id' in session:
         return db.session.get(User, session['user_id'])
@@ -165,7 +160,6 @@ def login():
 
     return render_template('login.html')
 
-# ROUTE PARA SA REGISTRATION (Inaayos ang BuildError)
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -181,7 +175,6 @@ def register():
             flash("May gumagamit na ng username na ito. Pumili ng iba.", "warning")
             return redirect(url_for('register'))
             
-        # Lumikha ng bagong student na may Free ₱100 Balance
         new_student = User(
             username=username,
             password=generate_password_hash(password),
@@ -307,7 +300,6 @@ def checkout():
     db.session.commit()
     session.pop('cart', None)
 
-    # Email notification kay admin
     items_rows = "".join([
         f"<tr>"
         f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.name}</td>"
@@ -507,7 +499,6 @@ def admin_users():
     users = User.query.all()
     return render_template('admin_users.html', users=users)
 
-# Database Table Creation at Initial Data
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(username='admin').first():
