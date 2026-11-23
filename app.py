@@ -1,6 +1,10 @@
 import os
 import re
+import smtplib
+import threading
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from functools import wraps
 
 import jinja2
@@ -23,19 +27,12 @@ load_dotenv()
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
-# ---------------------------------------------------------------------------
-# FLASK CONFIGURATION & DUAL TEMPLATE / STATIC RESOLUTION
-# Supports both:
-# 1. Normal subfolder structure: templates/ and static/
-# 2. Flat GitHub root structure where HTML and CSS are at root level
-# ---------------------------------------------------------------------------
 app = Flask(
     __name__,
     template_folder='templates' if os.path.isdir(os.path.join(BASE_DIR, 'templates')) else '.',
     static_folder='static' if os.path.isdir(os.path.join(BASE_DIR, 'static')) else '.'
 )
 
-# Robust template loader: checks both templates/ folder AND root directory
 loaders = []
 templates_path = os.path.join(BASE_DIR, 'templates')
 if os.path.isdir(templates_path):
@@ -43,7 +40,7 @@ if os.path.isdir(templates_path):
 loaders.append(jinja2.FileSystemLoader(BASE_DIR))
 app.jinja_loader = jinja2.ChoiceLoader(loaders)
 
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'canteen-super-secret-key-prod-2026')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cmdi-canteen-super-secret-key-2026')
 
 # ---------------------------------------------------------------------------
 # DATABASE CONFIGURATION: NEON POSTGRESQL + LOCAL SQLITE FALLBACK
@@ -51,11 +48,9 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'canteen-super-secret-ke
 raw_db_url = os.environ.get('DATABASE_URL', '').strip()
 
 if raw_db_url:
-    # Render and Heroku provide postgres:// which SQLAlchemy requires as postgresql://
     if raw_db_url.startswith('postgres://'):
         raw_db_url = raw_db_url.replace('postgres://', 'postgresql://', 1)
 
-    # For Neon and hosted PostgreSQL, ensure SSL mode is required
     if raw_db_url.startswith('postgresql://') and 'sslmode=' not in raw_db_url:
         separator = '&' if '?' in raw_db_url else '?'
         raw_db_url = f"{raw_db_url}{separator}sslmode=require"
@@ -76,7 +71,97 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 db = SQLAlchemy(app)
 
 # ---------------------------------------------------------------------------
-# FALLBACK STATIC FILE SERVING FOR FLAT GITHUB REPOSITORY
+# EMAIL SENDER FUNCTION: AUTOMATIC GMAIL NOTIFICATION TO ADMIN
+# ---------------------------------------------------------------------------
+def send_order_email_to_admin(order, user, order_items):
+    mail_user = os.environ.get('MAIL_USERNAME', '').strip()
+    mail_pass = os.environ.get('MAIL_PASSWORD', '').strip()
+    admin_email = os.environ.get('ADMIN_EMAIL', '').strip() or mail_user
+
+    if not mail_user or not mail_pass or not admin_email:
+        print("[EMAIL] Skipped: MAIL_USERNAME or MAIL_PASSWORD not configured.")
+        return
+
+    def _send():
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = f"🍽️ Bagong Order #{order.id} (₱{order.total:.2f}) - CMDI Canteen Hub"
+            msg['From'] = f"CMDI Canteen Hub <{mail_user}>"
+            msg['To'] = admin_email
+
+            items_rows = "".join([
+                f"<tr><td style='padding:10px;border-bottom:1px solid #e2e8f0;font-weight:bold;'>{item.item_name}</td>"
+                f"<td style='padding:10px;border-bottom:1px solid #e2e8f0;text-align:center;'>{item.qty}</td>"
+                f"<td style='padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#f37021;font-weight:bold;'>₱{item.price * item.qty:.2f}</td></tr>"
+                for item in order_items
+            ])
+
+            html_body = f"""
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+              <div style="background:#0d3b66;padding:24px;text-align:center;border-bottom:4px solid #f37021;">
+                <h2 style="color:#ffffff;margin:0;letter-spacing:-0.5px;">🍽️ CMDI Canteen Hub</h2>
+                <p style="color:#f37021;margin:6px 0 0;font-weight:bold;font-size:14px;">CARD-MRI Development Institute, Inc.</p>
+              </div>
+              <div style="padding:24px;background:#ffffff;">
+                <h3 style="color:#0d3b66;margin-top:0;">🎉 May Bagong Online Order! (Order #{order.id})</h3>
+                <p style="color:#475569;font-size:15px;">Pumasok na ang order mula sa estudyante. Handa na itong ihanda sa kusina:</p>
+                
+                <table style="width:100%;background:#f8fafc;padding:14px;border-radius:8px;margin-bottom:20px;font-size:14px;border:1px solid #e2e8f0;">
+                  <tr><td style="padding:4px 0;"><strong>Pangalan:</strong></td><td>{user.name}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>Email:</strong></td><td>{user.email}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>Telepono:</strong></td><td>{user.phone or 'N/A'}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>Uri ng Order:</strong></td><td>{'🪑 Dine-in Table' if order.order_type == 'dine_in' else '🥡 Takeout / Pickup'}</td></tr>
+                  <tr><td style="padding:4px 0;"><strong>Nais na Oras:</strong></td><td><strong style="color:#f37021;">{order.pickup_time}</strong></td></tr>
+                  <tr><td style="padding:4px 0;"><strong>Paraan ng Bayad:</strong></td><td>{order.payment_method.upper()} ({order.payment_status.upper()})</td></tr>
+                  {f'<tr><td style="padding:4px 0;"><strong>Special Notes:</strong></td><td><em>{order.special_instructions}</em></td></tr>' if order.special_instructions else ''}
+                </table>
+
+                <h4 style="color:#0d3b66;margin-bottom:10px;">📋 Mga Pagkaing In-Order:</h4>
+                <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+                  <thead>
+                    <tr style="background:#f1f5f9;color:#475569;font-size:13px;">
+                      <th style="padding:10px;text-align:left;">Ulam / Pagkain</th>
+                      <th style="padding:10px;text-align:center;">Dami</th>
+                      <th style="padding:10px;text-align:right;">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items_rows}
+                  </tbody>
+                  <tfoot>
+                    <tr style="background:#fff3e6;">
+                      <td colspan="2" style="padding:14px 10px;font-weight:bold;font-size:16px;color:#0d3b66;">Kabuuang Halaga:</td>
+                      <td style="padding:14px 10px;font-weight:bold;font-size:20px;color:#f37021;text-align:right;">₱{order.total:.2f}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+
+                <div style="text-align:center;margin-top:25px;">
+                  <a href="https://canteen-ordering-systems-1.onrender.com/admin/orders" style="background:#f37021;color:#ffffff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;box-shadow:0 4px 10px rgba(243,112,33,0.3);">Buksan ang Admin Orders Dashboard</a>
+                </div>
+              </div>
+              <div style="background:#f8fafc;padding:14px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+                CARD-MRI Development Institute, Inc. Canteen Hub Automated System
+              </div>
+            </div>
+            """
+
+            msg.attach(MIMEText(html_body, 'html'))
+
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(mail_user, mail_pass)
+            server.send_message(msg)
+            server.quit()
+            print(f"[EMAIL] Order notification #{order.id} sent successfully to {admin_email}!")
+        except Exception as e:
+            print(f"[EMAIL ERROR] Hindi naipadala ang email: {e}")
+
+    # Patakbuhin sa background thread para hindi mag-antay ang customer sa checkout screen
+    threading.Thread(target=_send, daemon=True).start()
+
+# ---------------------------------------------------------------------------
+# FALLBACK STATIC CSS
 # ---------------------------------------------------------------------------
 @app.route('/style.css')
 @app.route('/static/style.css')
@@ -224,14 +309,12 @@ def init_db():
 
     db.session.commit()
 
-# Ensure database is initialized
 with app.app_context():
     try:
         init_db()
     except Exception as e:
         print(f"DB Init notice: {e}")
 
-# Error handler for 500 to show readable errors if any
 @app.errorhandler(500)
 def handle_500_error(e):
     import traceback
@@ -527,17 +610,23 @@ def checkout():
     db.session.add(new_order)
     db.session.flush()
 
+    created_items_list = []
     for m_id, name, price, qty in order_items_to_create:
-        db.session.add(OrderItem(
+        oi = OrderItem(
             order_id=new_order.id,
             menu_item_id=m_id,
             item_name=name,
             price=price,
             qty=qty
-        ))
+        )
+        db.session.add(oi)
+        created_items_list.append(oi)
 
     db.session.commit()
     save_cart({})
+
+    # ✉️ IPADALA ANG EMAIL SA GMAIL NG ADMIN NANG AUTOMATIC
+    send_order_email_to_admin(new_order, user, created_items_list)
 
     pay_label = {
         'wallet': f'₱{total:.2f} deducted from in-app wallet',
@@ -546,7 +635,7 @@ def checkout():
         'cash': f'₱{total:.2f} to pay upon pickup/seating'
     }.get(payment_method, f'₱{total:.2f}')
 
-    flash(f'🎉 Order #{new_order.id} placed successfully! ({pay_label})', 'success')
+    flash(f'🎉 Order #{new_order.id} placed successfully! ({pay_label}) Staff has been alerted via Email.', 'success')
     return redirect(url_for('orders'))
 
 
