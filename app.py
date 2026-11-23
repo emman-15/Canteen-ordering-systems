@@ -1,996 +1,516 @@
 import os
-import re
 import smtplib
 import threading
-from datetime import datetime
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from functools import wraps
-
-import jinja2
-from dotenv import load_dotenv
-from flask import (
-    Flask,
-    flash,
-    g,
-    redirect,
-    render_template,
-    request,
-    send_from_directory,
-    session,
-    url_for,
-)
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime, date, time
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, abort
+from jinja2 import ChoiceLoader, FileSystemLoader
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 
-load_dotenv()
+app = Flask(__name__, template_folder='.')
+app.secret_key = os.environ.get('SECRET_KEY', 'cmdi_canteen_super_secret_key_2026')
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+# Suportahan ang parehong root folder at templates/ folder
+app.jinja_loader = ChoiceLoader([
+    FileSystemLoader('.'),
+    FileSystemLoader('templates')
+])
 
-app = Flask(
-    __name__,
-    template_folder='templates' if os.path.isdir(os.path.join(BASE_DIR, 'templates')) else '.',
-    static_folder='static' if os.path.isdir(os.path.join(BASE_DIR, 'static')) else '.'
-)
+# Database Configuration (Neon PostgreSQL o fallback sa SQLite)
+db_url = os.environ.get('DATABASE_URL', 'sqlite:///canteen.db')
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-loaders = []
-templates_path = os.path.join(BASE_DIR, 'templates')
-if os.path.isdir(templates_path):
-    loaders.append(jinja2.FileSystemLoader(templates_path))
-loaders.append(jinja2.FileSystemLoader(BASE_DIR))
-app.jinja_loader = jinja2.ChoiceLoader(loaders)
-
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cmdi-canteen-super-secret-key-2026')
-
-# ---------------------------------------------------------------------------
-# DATABASE CONFIGURATION: NEON POSTGRESQL + LOCAL SQLITE FALLBACK
-# ---------------------------------------------------------------------------
-raw_db_url = os.environ.get('DATABASE_URL', '').strip()
-
-if raw_db_url:
-    if raw_db_url.startswith('postgres://'):
-        raw_db_url = raw_db_url.replace('postgres://', 'postgresql://', 1)
-
-    if raw_db_url.startswith('postgresql://') and 'sslmode=' not in raw_db_url:
-        separator = '&' if '?' in raw_db_url else '?'
-        raw_db_url = f"{raw_db_url}{separator}sslmode=require"
-
-    app.config['SQLALCHEMY_DATABASE_URI'] = raw_db_url
-    app.config['DB_TYPE'] = 'Neon PostgreSQL'
-else:
-    db_path = os.path.join(BASE_DIR, 'canteen.db')
-    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
-    app.config['DB_TYPE'] = 'Local SQLite'
-
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,
-    'pool_recycle': 300,
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
 }
 
 db = SQLAlchemy(app)
 
-# ---------------------------------------------------------------------------
-# EMAIL SENDER FUNCTION: AUTOMATIC GMAIL NOTIFICATION TO ADMIN
-# ---------------------------------------------------------------------------
-def send_order_email_to_admin(order, user, order_items):
-    mail_user = os.environ.get('MAIL_USERNAME', '').strip()
-    mail_pass = os.environ.get('MAIL_PASSWORD', '').strip()
-    admin_email = os.environ.get('ADMIN_EMAIL', '').strip() or mail_user
+# Email Settings
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'emmanuelbarbadillo05@gmail.com')
+MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com')
+MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
-    if not mail_user or not mail_pass or not admin_email:
-        print("[EMAIL] Skipped: MAIL_USERNAME or MAIL_PASSWORD not configured.")
+def send_admin_email_async(subject, html_content):
+    """Nagpapadala ng email sa admin gamit ang background thread para hindi mag-lag ang user"""
+    if not MAIL_USERNAME or not MAIL_PASSWORD:
+        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set sa Environment.")
         return
 
     def _send():
         try:
             msg = MIMEMultipart('alternative')
-            msg['Subject'] = f"🍽️ Bagong Order #{order.id} (₱{order.total:.2f}) - CMDI Canteen Hub"
-            msg['From'] = f"CMDI Canteen Hub <{mail_user}>"
-            msg['To'] = admin_email
+            msg['Subject'] = subject
+            msg['From'] = f"CMDI Canteen System <{MAIL_USERNAME}>"
+            msg['To'] = ADMIN_EMAIL
+            msg.attach(MIMEText(html_content, 'html'))
 
-            items_rows = "".join([
-                f"<tr><td style='padding:10px;border-bottom:1px solid #e2e8f0;font-weight:bold;'>{item.item_name}</td>"
-                f"<td style='padding:10px;border-bottom:1px solid #e2e8f0;text-align:center;'>{item.qty}</td>"
-                f"<td style='padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#f37021;font-weight:bold;'>₱{item.price * item.qty:.2f}</td></tr>"
-                for item in order_items
-            ])
-
-            html_body = f"""
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
-              <div style="background:#0d3b66;padding:24px;text-align:center;border-bottom:4px solid #f37021;">
-                <h2 style="color:#ffffff;margin:0;letter-spacing:-0.5px;">🍽️ CMDI Canteen Hub</h2>
-                <p style="color:#f37021;margin:6px 0 0;font-weight:bold;font-size:14px;">CARD-MRI Development Institute, Inc.</p>
-              </div>
-              <div style="padding:24px;background:#ffffff;">
-                <h3 style="color:#0d3b66;margin-top:0;">🎉 May Bagong Online Order! (Order #{order.id})</h3>
-                <p style="color:#475569;font-size:15px;">Pumasok na ang order mula sa estudyante. Handa na itong ihanda sa kusina:</p>
-                
-                <table style="width:100%;background:#f8fafc;padding:14px;border-radius:8px;margin-bottom:20px;font-size:14px;border:1px solid #e2e8f0;">
-                  <tr><td style="padding:4px 0;"><strong>Pangalan:</strong></td><td>{user.name}</td></tr>
-                  <tr><td style="padding:4px 0;"><strong>Email:</strong></td><td>{user.email}</td></tr>
-                  <tr><td style="padding:4px 0;"><strong>Telepono:</strong></td><td>{user.phone or 'N/A'}</td></tr>
-                  <tr><td style="padding:4px 0;"><strong>Uri ng Order:</strong></td><td>{'🪑 Dine-in Table' if order.order_type == 'dine_in' else '🥡 Takeout / Pickup'}</td></tr>
-                  <tr><td style="padding:4px 0;"><strong>Nais na Oras:</strong></td><td><strong style="color:#f37021;">{order.pickup_time}</strong></td></tr>
-                  <tr><td style="padding:4px 0;"><strong>Paraan ng Bayad:</strong></td><td>{order.payment_method.upper()} ({order.payment_status.upper()})</td></tr>
-                  {f'<tr><td style="padding:4px 0;"><strong>Special Notes:</strong></td><td><em>{order.special_instructions}</em></td></tr>' if order.special_instructions else ''}
-                </table>
-
-                <h4 style="color:#0d3b66;margin-bottom:10px;">📋 Mga Pagkaing In-Order:</h4>
-                <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
-                  <thead>
-                    <tr style="background:#f1f5f9;color:#475569;font-size:13px;">
-                      <th style="padding:10px;text-align:left;">Ulam / Pagkain</th>
-                      <th style="padding:10px;text-align:center;">Dami</th>
-                      <th style="padding:10px;text-align:right;">Subtotal</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items_rows}
-                  </tbody>
-                  <tfoot>
-                    <tr style="background:#fff3e6;">
-                      <td colspan="2" style="padding:14px 10px;font-weight:bold;font-size:16px;color:#0d3b66;">Kabuuang Halaga:</td>
-                      <td style="padding:14px 10px;font-weight:bold;font-size:20px;color:#f37021;text-align:right;">₱{order.total:.2f}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-
-                <div style="text-align:center;margin-top:25px;">
-                  <a href="https://canteen-ordering-systems-1.onrender.com/admin/orders" style="background:#f37021;color:#ffffff;padding:12px 28px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;box-shadow:0 4px 10px rgba(243,112,33,0.3);">Buksan ang Admin Orders Dashboard</a>
-                </div>
-              </div>
-              <div style="background:#f8fafc;padding:14px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-                CARD-MRI Development Institute, Inc. Canteen Hub Automated System
-              </div>
-            </div>
-            """
-
-            msg.attach(MIMEText(html_body, 'html'))
-
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(mail_user, mail_pass)
-            server.send_message(msg)
-            server.quit()
-            print(f"[EMAIL] Order notification #{order.id} sent successfully to {admin_email}!")
+            clean_password = MAIL_PASSWORD.replace(' ', '').strip()
+            with smtplib.SMTP('smtp.gmail.com', 587, timeout=15) as server:
+                server.starttls()
+                server.login(MAIL_USERNAME, clean_password)
+                server.send_message(msg)
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL}")
         except Exception as e:
             print(f"[EMAIL ERROR] Hindi naipadala ang email: {e}")
 
-    # Patakbuhin sa background thread para hindi mag-antay ang customer sa checkout screen
     threading.Thread(target=_send, daemon=True).start()
 
-# ---------------------------------------------------------------------------
-# FALLBACK STATIC CSS
-# ---------------------------------------------------------------------------
-@app.route('/style.css')
-@app.route('/static/style.css')
-def serve_css():
-    static_css = os.path.join(BASE_DIR, 'static', 'style.css')
-    if os.path.exists(static_css):
-        return send_from_directory(os.path.join(BASE_DIR, 'static'), 'style.css')
-    return send_from_directory(BASE_DIR, 'style.css')
-
-# ---------------------------------------------------------------------------
-# DATABASE MODELS
-# ---------------------------------------------------------------------------
-
+# --- DATABASE MODELS ---
 class User(db.Model):
-    __tablename__ = 'user'
-
+    __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(120), nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='user')
-    wallet_balance = db.Column(db.Float, nullable=False, default=0.0)
-    phone = db.Column(db.String(50), nullable=True, default='')
-    created_at = db.Column(db.String(50), nullable=False, default=lambda: datetime.utcnow().isoformat())
-
-    orders = db.relationship('Order', backref='user', lazy=True, cascade='all, delete-orphan')
-    reservations = db.relationship('Reservation', backref='user', lazy=True, cascade='all, delete-orphan')
-
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(20), default='student') # student, faculty, admin
+    name = db.Column(db.String(120), nullable=True)
+    wallet_balance = db.Column(db.Float, default=500.0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class MenuItem(db.Model):
-    __tablename__ = 'menu_item'
-
+    __tablename__ = 'menu_items'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(120), nullable=False)
-    description = db.Column(db.Text, default='')
+    name = db.Column(db.String(100), nullable=False)
+    category = db.Column(db.String(50), nullable=False) # Meals, Snacks, Drinks, Desserts
     price = db.Column(db.Float, nullable=False)
-    category = db.Column(db.String(50), default='General')
-    available = db.Column(db.Boolean, default=True)
-    image_url = db.Column(db.String(255), default='')
-    prep_time = db.Column(db.String(30), default='15 mins')
-
+    description = db.Column(db.String(255))
+    is_available = db.Column(db.Boolean, default=True)
+    image_url = db.Column(db.String(255))
 
 class Reservation(db.Model):
-    __tablename__ = 'reservation'
-
+    __tablename__ = 'reservations'
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    customer_name = db.Column(db.String(120), nullable=False)
-    customer_phone = db.Column(db.String(50), nullable=False)
-    customer_email = db.Column(db.String(120), nullable=False)
-    reservation_date = db.Column(db.String(30), nullable=False)
-    reservation_time = db.Column(db.String(30), nullable=False)
-    party_size = db.Column(db.Integer, nullable=False, default=2)
-    table_preference = db.Column(db.String(60), default='Main Dining Hall')
-    special_notes = db.Column(db.Text, default='')
-    status = db.Column(db.String(30), default='pending')
-    created_at = db.Column(db.String(50), default=lambda: datetime.utcnow().isoformat())
-
-    orders = db.relationship('Order', backref='reservation', lazy=True)
-
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    table_number = db.Column(db.Integer, nullable=False)
+    reservation_date = db.Column(db.Date, nullable=False)
+    reservation_time = db.Column(db.Time, nullable=False)
+    guests = db.Column(db.Integer, default=1)
+    status = db.Column(db.String(20), default='confirmed') # confirmed, cancelled, completed
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    user = db.relationship('User', backref=db.backref('reservations', lazy=True))
 
 class Order(db.Model):
-    __tablename__ = 'order'
-
+    __tablename__ = 'orders'
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    reservation_id = db.Column(db.Integer, db.ForeignKey('reservation.id'), nullable=True)
-    order_type = db.Column(db.String(30), default='pickup')
-    total = db.Column(db.Float, nullable=False, default=0.0)
-    payment_method = db.Column(db.String(30), default='wallet')
-    payment_status = db.Column(db.String(30), default='paid')
-    status = db.Column(db.String(30), default='pending')
-    pickup_time = db.Column(db.String(60), default='ASAP')
-    special_instructions = db.Column(db.Text, default='')
-    created_at = db.Column(db.String(50), default=lambda: datetime.utcnow().isoformat())
-
-    items = db.relationship('OrderItem', backref='order', lazy=True, cascade='all, delete-orphan')
-
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    order_type = db.Column(db.String(20), nullable=False) # 'dine-in' or 'takeout'
+    reservation_id = db.Column(db.Integer, db.ForeignKey('reservations.id'), nullable=True)
+    total_amount = db.Column(db.Float, nullable=False)
+    payment_method = db.Column(db.String(20), default='wallet') # wallet, cash_on_pickup
+    payment_status = db.Column(db.String(20), default='paid')
+    status = db.Column(db.String(20), default='pending') # pending, preparing, ready, completed, cancelled
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    user = db.relationship('User', backref=db.backref('orders', lazy=True))
+    reservation = db.relationship('Reservation', backref=db.backref('linked_orders', lazy=True))
+    items = db.relationship('OrderItem', backref='order', cascade="all, delete-orphan", lazy=True)
 
 class OrderItem(db.Model):
-    __tablename__ = 'order_item'
-
+    __tablename__ = 'order_items'
     id = db.Column(db.Integer, primary_key=True)
-    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
-    menu_item_id = db.Column(db.Integer, db.ForeignKey('menu_item.id'), nullable=True)
-    item_name = db.Column(db.String(120), nullable=False)
+    order_id = db.Column(db.Integer, db.ForeignKey('orders.id'), nullable=False)
+    menu_item_id = db.Column(db.Integer, db.ForeignKey('menu_items.id'), nullable=False)
+    quantity = db.Column(db.Integer, default=1)
     price = db.Column(db.Float, nullable=False)
-    qty = db.Column(db.Integer, nullable=False, default=1)
+    menu_item = db.relationship('MenuItem')
 
-
-# ---------------------------------------------------------------------------
-# INITIALIZATION & SEEDING
-# ---------------------------------------------------------------------------
-
-def init_db():
-    db.create_all()
-
-    admin = User.query.filter_by(email='admin@canteen.com').first()
-    if not admin:
-        admin = User(
-            name='Canteen Admin',
-            email='admin@canteen.com',
-            password_hash=generate_password_hash('admin123'),
-            role='admin',
-            wallet_balance=0.0,
-            phone='0917-111-2222',
-            created_at=datetime.utcnow().isoformat()
-        )
-        db.session.add(admin)
-
-    student = User.query.filter_by(email='student@canteen.com').first()
-    if not student:
-        student = User(
-            name='Demo Student',
-            email='student@canteen.com',
-            password_hash=generate_password_hash('student123'),
-            role='user',
-            wallet_balance=500.0,
-            phone='0928-333-4444',
-            created_at=datetime.utcnow().isoformat()
-        )
-        db.session.add(student)
-
-    if MenuItem.query.count() == 0:
-        sample_items = [
-            ('Chicken Adobo Rice Bowl', 'Savory tender chicken braised in garlic, soy sauce, vinegar, with hot steamed rice.', 65.0, 'Meals', '🍗', '15 mins'),
-            ('Sizzling Pork Sisig with Rice', 'Crispy, seasoned minced pork with onions, calamansi, egg, and steamed rice.', 75.0, 'Meals', '🍳', '15 mins'),
-            ('Beef Caldereta Rice Bowl', 'Hearty beef stew in rich tomato gravy with bell peppers and potatoes.', 85.0, 'Meals', '🍲', '20 mins'),
-            ('Crispy Lechon Kawali', 'Golden deep-fried pork belly with signature spiced liver dipping sauce and rice.', 90.0, 'Meals', '🥓', '15 mins'),
-            ('Sinigang na Baboy Soup', 'Pork ribs in sour tamarind broth with kangkong, radish, and tomato.', 80.0, 'Meals', '🥣', '20 mins'),
-            ('Crispy Veggie Lumpia (5pcs)', 'Golden-fried vegetable spring rolls served with homemade sweet chili dip.', 40.0, 'Snacks', '🥟', '10 mins'),
-            ('Filipino Sweet Spaghetti', 'Classic sweet tomato sauce with savory hotdog slices and grated melted cheese.', 45.0, 'Snacks', '🍝', '10 mins'),
-            ('Cheesy Burger with Fries', 'Juicy beef patty with melted cheddar, lettuce, and crispy golden potato fries.', 60.0, 'Snacks', '🍔', '12 mins'),
-            ('Clubhouse Sandwich', 'Triple-decker sandwich with ham, egg, cheese, and crunchy vegetable slaw.', 50.0, 'Snacks', '🥪', '10 mins'),
-            ('Signature House Iced Tea (16oz)', 'Refreshing freshly brewed black tea with calamansi and honey.', 20.0, 'Drinks', '🍹', '5 mins'),
-            ('Fresh Calamansi Juice (16oz)', 'Natural vitamin C packed citrus cooler served chilled.', 25.0, 'Drinks', '🍋', '5 mins'),
-            ('Iced Caramel Macchiato', 'Cold espresso layered with fresh milk and sweet caramel drizzle.', 45.0, 'Drinks', '☕', '5 mins'),
-            ('Bottled Spring Water (500ml)', 'Purified and chilled drinking water.', 15.0, 'Drinks', '💧', '2 mins'),
-            ('Special Halo-Halo Supreme', 'Shaved ice with ube halaya, leche flan, nata de coco, pinipig, and milk.', 55.0, 'Desserts', '🍨', '8 mins'),
-            ('Creamy Leche Flan Slice', 'Silky smooth baked caramel custard dessert slice.', 35.0, 'Desserts', '🍮', '5 mins'),
-            ('Crispy Banana Turon (3pcs)', 'Sweet banana and jackfruit wrapped and glazed in melted brown sugar.', 25.0, 'Desserts', '🍌', '5 mins'),
-        ]
-        for name, desc, price, cat, icon, prep in sample_items:
-            db.session.add(MenuItem(name=name, description=desc, price=price, category=cat, available=True, image_url=icon, prep_time=prep))
-
-    db.session.commit()
-
-with app.app_context():
-    try:
-        init_db()
-    except Exception as e:
-        print(f"DB Init notice: {e}")
-
-@app.errorhandler(500)
-def handle_500_error(e):
-    import traceback
-    return f"<div style='font-family:sans-serif;padding:24px;'><h3 style='color:#dc3545;'>Application Notice (500)</h3><pre style='background:#f8f9fa;padding:16px;border:1px solid #dee2e6;border-radius:8px;overflow-x:auto;'>{traceback.format_exc()}</pre></div>", 500
-
-# ---------------------------------------------------------------------------
-# AUTHENTICATION & ACCESS DECORATORS
-# ---------------------------------------------------------------------------
-
-def login_required(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if 'user_id' not in session:
-            flash('Please log in to continue.', 'warning')
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return wrapper
-
-
-def admin_required(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if session.get('role') != 'admin':
-            flash('Administrator access required.', 'danger')
-            return redirect(url_for('menu'))
-        return f(*args, **kwargs)
-    return wrapper
-
-
+# Helper Functions
 def current_user():
-    uid = session.get('user_id')
-    if not uid:
-        return None
-    return User.query.get(uid)
-
-
-def get_cart():
-    return session.get('cart', {})
-
-
-def save_cart(cart):
-    session['cart'] = cart
-    session.modified = True
-
+    if 'user_id' in session:
+        return db.session.get(User, session['user_id'])
+    return None
 
 @app.context_processor
-def inject_globals():
-    cart = get_cart()
-    cart_count = sum(cart.values()) if cart else 0
-    return dict(
-        current_user=current_user(),
-        cart_count=cart_count,
-        db_type=app.config.get('DB_TYPE', 'Database'),
-        now_year=datetime.utcnow().year,
-    )
+def inject_user():
+    return dict(current_user=current_user(), now=datetime.utcnow())
 
-
-# ---------------------------------------------------------------------------
-# CORE & AUTH ROUTES
-# ---------------------------------------------------------------------------
-
+# --- ROUTES ---
 @app.route('/')
-def index():
-    if 'user_id' in session:
-        return redirect(url_for('admin_dashboard') if session.get('role') == 'admin' else url_for('menu'))
-    return redirect(url_for('login'))
-
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        name = request.form.get('name', '').strip()
-        email = request.form.get('email', '').strip().lower()
-        password = request.form.get('password', '')
-        phone = request.form.get('phone', '').strip()
-
-        if not name or not email or not password:
-            flash('Name, email, and password are required.', 'danger')
-            return redirect(url_for('register'))
-
-        existing = User.query.filter_by(email=email).first()
-        if existing:
-            flash('An account with that email already exists.', 'danger')
-            return redirect(url_for('register'))
-
-        new_user = User(
-            name=name,
-            email=email,
-            password_hash=generate_password_hash(password),
-            role='user',
-            wallet_balance=100.0,
-            phone=phone,
-            created_at=datetime.utcnow().isoformat()
-        )
-        db.session.add(new_user)
-        db.session.commit()
-
-        flash('Account created with ₱100 welcome balance! Please log in.', 'success')
+def home():
+    user = current_user()
+    if not user:
         return redirect(url_for('login'))
-
-    return render_template('register.html')
-
+    if user.role == 'admin':
+        return redirect(url_for('admin_dashboard'))
+    return redirect(url_for('menu'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form.get('email', '').strip().lower()
-        password = request.form.get('password', '')
-        user = User.query.filter_by(email=email).first()
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        user = User.query.filter_by(username=username).first()
 
-        if user and check_password_hash(user.password_hash, password):
+        if user and check_password_hash(user.password, password):
             session['user_id'] = user.id
             session['role'] = user.role
-            session['name'] = user.name
-            flash(f'Welcome back, {user.name}!', 'success')
-            return redirect(url_for('admin_dashboard') if user.role == 'admin' else url_for('menu'))
-
-        flash('Invalid email or password. Please try again.', 'danger')
-        return redirect(url_for('login'))
+            flash(f"Maligayang pagbabalik, {user.name or user.username}!", "success")
+            if user.role == 'admin':
+                return redirect(url_for('admin_dashboard'))
+            return redirect(url_for('menu'))
+        else:
+            flash("Maling username o password. Pakisubukan muli.", "danger")
 
     return render_template('login.html')
-
 
 @app.route('/logout')
 def logout():
     session.clear()
-    flash('You have been logged out successfully.', 'info')
+    flash("Matagumpay kang naka-logout.", "info")
     return redirect(url_for('login'))
 
-
-# ---------------------------------------------------------------------------
-# CUSTOMER: ONLINE ORDERING & MENU ROUTES
-# ---------------------------------------------------------------------------
-
 @app.route('/menu')
-@login_required
 def menu():
-    category_filter = request.args.get('category', '').strip()
-    search_query = request.args.get('q', '').strip()
-
-    query = MenuItem.query.filter_by(available=True)
-
-    if category_filter and category_filter != 'All':
-        query = query.filter_by(category=category_filter)
-
-    if search_query:
-        query = query.filter(MenuItem.name.ilike(f'%{search_query}%'))
-
-    items = query.order_by(MenuItem.category, MenuItem.name).all()
-    all_categories = [c[0] for c in db.session.query(MenuItem.category).distinct().order_by(MenuItem.category).all()]
-
-    return render_template(
-        'menu.html',
-        items=items,
-        categories=all_categories,
-        active_category=category_filter or 'All',
-        search_query=search_query
-    )
-
-
-@app.route('/cart/add/<int:item_id>', methods=['POST'])
-@login_required
-def add_to_cart(item_id):
-    item = MenuItem.query.get(item_id)
-    if not item or not item.available:
-        flash('That item is currently unavailable.', 'warning')
-        return redirect(url_for('menu'))
-
-    qty = int(request.form.get('qty', 1))
-    cart = get_cart()
-    key = str(item_id)
-    cart[key] = cart.get(key, 0) + max(1, qty)
-    save_cart(cart)
-    flash(f'Added {qty}× "{item.name}" to your cart.', 'success')
-    return redirect(request.referrer or url_for('menu'))
-
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+    category = request.args.get('category')
+    query = MenuItem.query.filter_by(is_available=True)
+    if category and category != 'All':
+        query = query.filter_by(category=category)
+    items = query.all()
+    categories = ['All', 'Meals', 'Snacks', 'Drinks', 'Desserts']
+    return render_template('menu.html', items=items, categories=categories, selected_category=category or 'All')
 
 @app.route('/cart')
-@login_required
 def cart():
     user = current_user()
-    cart_data = get_cart()
-    line_items = []
+    if not user:
+        return redirect(url_for('login'))
+    cart_data = session.get('cart', {})
+    cart_items = []
     total = 0.0
+    for item_id, qty in cart_data.items():
+        item = db.session.get(MenuItem, int(item_id))
+        if item:
+            subtotal = item.price * qty
+            total += subtotal
+            cart_items.append({'item': item, 'quantity': qty, 'subtotal': subtotal})
+    return render_template('cart.html', cart_items=cart_items, total=total)
 
-    for item_id_str, qty in list(cart_data.items()):
-        item = MenuItem.query.get(int(item_id_str))
-        if not item or not item.available:
-            continue
-        subtotal = item.price * qty
-        total += subtotal
-        line_items.append({'item': item, 'qty': qty, 'subtotal': subtotal})
-
-    active_reservations = Reservation.query.filter(
-        Reservation.user_id == user.id,
-        Reservation.status.in_(['pending', 'confirmed'])
-    ).order_by(Reservation.reservation_date.desc(), Reservation.reservation_time.desc()).all()
-
-    return render_template(
-        'cart.html',
-        line_items=line_items,
-        total=total,
-        active_reservations=active_reservations
-    )
-
-
-@app.route('/cart/update/<int:item_id>', methods=['POST'])
-@login_required
-def update_cart(item_id):
-    try:
-        qty = int(request.form.get('qty', 1))
-    except ValueError:
-        qty = 1
-
-    cart = get_cart()
-    key = str(item_id)
-    if qty <= 0:
-        cart.pop(key, None)
-    else:
-        cart[key] = qty
-    save_cart(cart)
+@app.route('/cart/add/<int:item_id>', methods=['POST'])
+def add_to_cart(item_id):
+    cart_data = session.get('cart', {})
+    str_id = str(item_id)
+    cart_data[str_id] = cart_data.get(str_id, 0) + 1
+    session['cart'] = cart_data
+    session.modified = True
+    flash("Naidagdag ang pagkain sa iyong cart!", "success")
     return redirect(url_for('cart'))
-
 
 @app.route('/cart/remove/<int:item_id>', methods=['POST'])
-@login_required
 def remove_from_cart(item_id):
-    cart = get_cart()
-    cart.pop(str(item_id), None)
-    save_cart(cart)
-    flash('Item removed from cart.', 'info')
+    cart_data = session.get('cart', {})
+    str_id = str(item_id)
+    if str_id in cart_data:
+        del cart_data[str_id]
+        session['cart'] = cart_data
+        session.modified = True
+        flash("Naalis ang pagkain sa iyong cart.", "info")
     return redirect(url_for('cart'))
 
-
 @app.route('/checkout', methods=['POST'])
-@login_required
 def checkout():
     user = current_user()
-    cart_data = get_cart()
-
+    if not user:
+        return redirect(url_for('login'))
+    cart_data = session.get('cart', {})
     if not cart_data:
-        flash('Your cart is empty. Please choose some delicious items from our menu.', 'warning')
+        flash("Walang laman ang iyong cart.", "warning")
         return redirect(url_for('menu'))
 
-    order_type = request.form.get('order_type', 'pickup')
-    pickup_time = request.form.get('pickup_time', 'ASAP').strip() or 'ASAP'
+    order_type = request.form.get('order_type', 'takeout')
     payment_method = request.form.get('payment_method', 'wallet')
-    special_instructions = request.form.get('special_instructions', '').strip()
-    reservation_id_raw = request.form.get('reservation_id')
+    reservation_id = request.form.get('reservation_id')
 
-    reservation_id = int(reservation_id_raw) if reservation_id_raw and reservation_id_raw.isdigit() else None
-
-    total = 0.0
+    # Kwentahin ang kabuuang halaga
+    total_amount = 0.0
     order_items_to_create = []
+    for item_id, qty in cart_data.items():
+        menu_item = db.session.get(MenuItem, int(item_id))
+        if menu_item and menu_item.is_available:
+            subtotal = menu_item.price * qty
+            total_amount += subtotal
+            order_items_to_create.append((menu_item, qty, menu_item.price))
 
-    for item_id_str, qty in cart_data.items():
-        item = MenuItem.query.get(int(item_id_str))
-        if not item or not item.available:
-            continue
-        subtotal = item.price * qty
-        total += subtotal
-        order_items_to_create.append((item.id, item.name, item.price, qty))
-
-    if not order_items_to_create:
-        flash('Selected items are no longer available.', 'danger')
-        save_cart({})
-        return redirect(url_for('menu'))
-
-    payment_status = 'paid'
     if payment_method == 'wallet':
-        if user.wallet_balance < total:
-            shortage = total - user.wallet_balance
-            flash(f'Insufficient wallet balance! Total is ₱{total:.2f}, you have ₱{user.wallet_balance:.2f}. Need ₱{shortage:.2f} more. Please top up or pick another payment method.', 'danger')
-            return redirect(url_for('wallet'))
-        user.wallet_balance -= total
-    elif payment_method in ('gcash', 'maya'):
-        payment_status = 'paid'
-    elif payment_method == 'cash':
-        payment_status = 'pending'
+        if user.wallet_balance < total_amount:
+            flash(f"Kulang ang iyong wallet balance (₱{user.wallet_balance:.2f}). Mag-top up muna o pumili ng Cash on Pickup.", "danger")
+            return redirect(url_for('cart'))
+        user.wallet_balance -= total_amount
+        pay_status = 'paid'
+    else:
+        pay_status = 'pending_cash'
 
     new_order = Order(
         user_id=user.id,
-        reservation_id=reservation_id,
         order_type=order_type,
-        total=total,
+        reservation_id=int(reservation_id) if reservation_id and reservation_id.isdigit() else None,
+        total_amount=total_amount,
         payment_method=payment_method,
-        payment_status=payment_status,
-        status='pending',
-        pickup_time=pickup_time,
-        special_instructions=special_instructions,
-        created_at=datetime.utcnow().isoformat()
+        payment_status=pay_status,
+        status='pending'
     )
     db.session.add(new_order)
     db.session.flush()
 
-    created_items_list = []
-    for m_id, name, price, qty in order_items_to_create:
-        oi = OrderItem(
-            order_id=new_order.id,
-            menu_item_id=m_id,
-            item_name=name,
-            price=price,
-            qty=qty
-        )
+    for item, qty, price in order_items_to_create:
+        oi = OrderItem(order_id=new_order.id, menu_item_id=item.id, quantity=qty, price=price)
         db.session.add(oi)
-        created_items_list.append(oi)
 
     db.session.commit()
-    save_cart({})
+    session.pop('cart', None)
 
-    # ✉️ IPADALA ANG EMAIL SA GMAIL NG ADMIN NANG AUTOMATIC
-    send_order_email_to_admin(new_order, user, created_items_list)
+    # --- AUTOMATIC EMAIL NOTIFICATION SA GMAIL NG ADMIN ---
+    items_rows = "".join([
+        f"<tr>"
+        f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.name}</td>"
+        f"<td style='padding:10px;border-bottom:1px solid #eee;text-align:center;'>{qty}</td>"
+        f"<td style='padding:10px;border-bottom:1px solid #eee;text-align:right;'>₱{price * qty:.2f}</td>"
+        f"</tr>"
+        for item, qty, price in order_items_to_create
+    ])
 
-    pay_label = {
-        'wallet': f'₱{total:.2f} deducted from in-app wallet',
-        'gcash': f'₱{total:.2f} paid via GCash',
-        'maya': f'₱{total:.2f} paid via Maya',
-        'cash': f'₱{total:.2f} to pay upon pickup/seating'
-    }.get(payment_method, f'₱{total:.2f}')
+    email_html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: #0d3b66; color: white; padding: 20px; text-align: center;">
+            <h2 style="margin: 0; color: #ff7200;">CARD-MRI Development Institute, Inc.</h2>
+            <h3 style="margin: 6px 0 0 0; font-weight: normal; font-size: 16px;">May Bagong Order sa Canteen!</h3>
+        </div>
+        <div style="padding: 24px; background-color: #ffffff;">
+            <p style="font-size: 15px; color: #333;">Magandang araw Admin,</p>
+            <p style="font-size: 14px; color: #555;">May bagong natanggap na order mula sa online canteen system:</p>
+            
+            <div style="background-color: #f8f9fa; border-left: 4px solid #ff7200; padding: 12px 16px; margin: 15px 0;">
+                <p style="margin: 4px 0;"><strong>Order ID:</strong> #{new_order.id}</p>
+                <p style="margin: 4px 0;"><strong>Customer:</strong> {user.name or user.username} ({user.role.capitalize()})</p>
+                <p style="margin: 4px 0;"><strong>Type:</strong> <span style="color:#ff7200;font-weight:bold;">{order_type.upper()}</span></p>
+                <p style="margin: 4px 0;"><strong>Bayad:</strong> {payment_method.replace('_', ' ').capitalize()} ({pay_status})</p>
+                <p style="margin: 4px 0;"><strong>Oras:</strong> {new_order.created_at.strftime('%b %d, %Y - %I:%M %p')}</p>
+            </div>
 
-    flash(f'🎉 Order #{new_order.id} placed successfully! ({pay_label}) Staff has been alerted via Email.', 'success')
-    return redirect(url_for('orders'))
+            <h4 style="color: #0d3b66; margin-top: 20px; border-bottom: 2px solid #0d3b66; padding-bottom: 6px;">Mga Pagkaing In-order:</h4>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background-color: #f1f5f9; color: #0d3b66; font-size: 13px;">
+                        <th style="padding: 8px 10px; text-align: left;">Item</th>
+                        <th style="padding: 8px 10px; text-align: center;">Qty</th>
+                        <th style="padding: 8px 10px; text-align: right;">Presyo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {items_rows}
+                </tbody>
+                <tfoot>
+                    <tr style="background-color: #fff8f0;">
+                        <td colspan="2" style="padding: 12px 10px; text-align: right; font-weight: bold; font-size: 15px;">Kabuuang Halaga:</td>
+                        <td style="padding: 12px 10px; text-align: right; font-weight: bold; font-size: 17px; color: #ff7200;">₱{total_amount:.2f}</td>
+                    </tr>
+                </tfoot>
+            </table>
 
+            <div style="text-align: center; margin-top: 30px;">
+                <a href="https://canteen-ordering-systems-1.onrender.com/admin/orders" 
+                   style="background-color: #ff7200; color: #ffffff; padding: 12px 26px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+                   Buksan ang Admin Dashboard
+                </a>
+            </div>
+        </div>
+        <div style="background-color: #0d3b66; color: #ffffff; padding: 12px; text-align: center; font-size: 12px;">
+            CMDI Online Canteen Ordering & Reservation System &bull; {datetime.utcnow().year}
+        </div>
+    </div>
+    """
+
+    send_admin_email_async(
+        f"[CMDI Canteen] Bagong Order #{new_order.id} (₱{total_amount:.2f})",
+        email_html
+    )
+
+    flash(f"Salamat! Matagumpay ang iyong order (#{new_order.id}). Naabisuhan na ang Canteen Admin.", "success")
+    return redirect(url_for('my_orders'))
 
 @app.route('/orders')
-@login_required
-def orders():
+def my_orders():
     user = current_user()
-    user_orders = Order.query.filter_by(user_id=user.id).order_by(Order.created_at.desc()).all()
-    return render_template('orders.html', orders=user_orders)
-
-
-@app.route('/orders/cancel/<int:order_id>', methods=['POST'])
-@login_required
-def cancel_order(order_id):
-    user = current_user()
-    order = Order.query.filter_by(id=order_id, user_id=user.id).first()
-
-    if not order:
-        flash('Order not found.', 'danger')
-        return redirect(url_for('orders'))
-
-    if order.status != 'pending':
-        flash('Only pending orders can be cancelled. Your food is already being prepared!', 'warning')
-        return redirect(url_for('orders'))
-
-    if order.payment_method == 'wallet' and order.payment_status == 'paid':
-        user.wallet_balance += order.total
-        order.payment_status = 'refunded'
-        flash(f'Order #{order.id} cancelled. ₱{order.total:.2f} has been refunded to your wallet.', 'success')
-    else:
-        flash(f'Order #{order.id} has been cancelled.', 'info')
-
-    order.status = 'cancelled'
-    db.session.commit()
-    return redirect(url_for('orders'))
-
-
-# ---------------------------------------------------------------------------
-# CUSTOMER: TABLE RESERVATION ROUTES
-# ---------------------------------------------------------------------------
+    if not user:
+        return redirect(url_for('login'))
+    orders = Order.query.filter_by(user_id=user.id).order_by(Order.created_at.desc()).all()
+    return render_template('orders.html', orders=orders)
 
 @app.route('/reservations', methods=['GET', 'POST'])
-@login_required
 def reservations():
     user = current_user()
+    if not user:
+        return redirect(url_for('login'))
 
     if request.method == 'POST':
-        customer_name = request.form.get('customer_name', '').strip() or user.name
-        customer_phone = request.form.get('customer_phone', '').strip() or user.phone or 'N/A'
-        customer_email = request.form.get('customer_email', '').strip() or user.email
-        reservation_date = request.form.get('reservation_date', '').strip()
-        reservation_time = request.form.get('reservation_time', '').strip()
-        party_size = int(request.form.get('party_size', 2))
-        table_preference = request.form.get('table_preference', 'Main Dining Hall')
-        special_notes = request.form.get('special_notes', '').strip()
-        preorder_food = request.form.get('preorder_food') == 'yes'
+        table_num = request.form.get('table_number')
+        res_date_str = request.form.get('reservation_date')
+        res_time_str = request.form.get('reservation_time')
+        guests = request.form.get('guests', 1)
 
-        if not reservation_date or not reservation_time:
-            flash('Please select both a reservation date and time.', 'danger')
+        try:
+            r_date = datetime.strptime(res_date_str, '%Y-%m-%d').date()
+            r_time = datetime.strptime(res_time_str, '%H:%M').time()
+            new_res = Reservation(
+                user_id=user.id,
+                table_number=int(table_num),
+                reservation_date=r_date,
+                reservation_time=r_time,
+                guests=int(guests),
+                status='confirmed'
+            )
+            db.session.add(new_res)
+            db.session.commit()
+            flash("Matagumpay ang iyong table reservation!", "success")
             return redirect(url_for('reservations'))
+        except Exception as e:
+            flash(f"Nagkaroon ng problema sa pag-reserve: {e}", "danger")
 
-        new_res = Reservation(
-            user_id=user.id,
-            customer_name=customer_name,
-            customer_phone=customer_phone,
-            customer_email=customer_email,
-            reservation_date=reservation_date,
-            reservation_time=reservation_time,
-            party_size=party_size,
-            table_preference=table_preference,
-            special_notes=special_notes,
-            status='pending',
-            created_at=datetime.utcnow().isoformat()
-        )
-        db.session.add(new_res)
-        db.session.commit()
-
-        if preorder_food:
-            flash(f'Reservation #{new_res.id} requested for {reservation_date} at {reservation_time}! Now choose dishes to pre-order.', 'success')
-            return redirect(url_for('menu'))
-
-        flash(f'Reservation #{new_res.id} successfully placed! We look forward to hosting you on {reservation_date} at {reservation_time}.', 'success')
-        return redirect(url_for('reservations'))
-
-    user_reservations = Reservation.query.filter_by(user_id=user.id).order_by(Reservation.created_at.desc()).all()
-    today_str = datetime.utcnow().strftime('%Y-%m-%d')
-    return render_template('reservations.html', reservations=user_reservations, today_str=today_str)
-
-
-@app.route('/reservations/cancel/<int:reservation_id>', methods=['POST'])
-@login_required
-def cancel_reservation(reservation_id):
-    user = current_user()
-    reservation = Reservation.query.filter_by(id=reservation_id, user_id=user.id).first()
-
-    if not reservation:
-        flash('Reservation not found.', 'danger')
-        return redirect(url_for('reservations'))
-
-    if reservation.status in ('completed', 'cancelled'):
-        flash('This reservation cannot be cancelled.', 'warning')
-        return redirect(url_for('reservations'))
-
-    reservation.status = 'cancelled'
-    db.session.commit()
-    flash(f'Reservation #{reservation.id} has been cancelled.', 'info')
-    return redirect(url_for('reservations'))
-
-
-# ---------------------------------------------------------------------------
-# CUSTOMER: CASHLESS WALLET ROUTES
-# ---------------------------------------------------------------------------
+    my_res = Reservation.query.filter_by(user_id=user.id).order_by(Reservation.reservation_date.desc()).all()
+    return render_template('reservations.html', reservations=my_res)
 
 @app.route('/wallet', methods=['GET', 'POST'])
-@login_required
 def wallet():
     user = current_user()
-
+    if not user:
+        return redirect(url_for('login'))
     if request.method == 'POST':
-        try:
-            amount = float(request.form.get('amount', 0))
-        except ValueError:
-            amount = 0.0
-
-        payment_provider = request.form.get('provider', 'GCash')
-
-        if amount <= 0:
-            flash('Please enter a valid top-up amount greater than ₱0.', 'danger')
-        else:
+        amount = float(request.form.get('amount', 0))
+        if amount > 0:
             user.wallet_balance += amount
             db.session.commit()
-            flash(f'✅ Successfully loaded ₱{amount:.2f} into your wallet via {payment_provider}!', 'success')
+            flash(f"Matagumpay na nakapag-top up ng ₱{amount:.2f}!", "success")
+        else:
+            flash("Maglagay ng tamang halaga para sa top up.", "warning")
         return redirect(url_for('wallet'))
+    return render_template('wallet.html', user=user)
 
-    return render_template('wallet.html')
-
-
-# ---------------------------------------------------------------------------
-# ADMIN ROUTES: DASHBOARD, ORDERS, RESERVATIONS, MENU, USERS
-# ---------------------------------------------------------------------------
-
+# --- ADMIN ROUTES ---
 @app.route('/admin')
-@login_required
-@admin_required
+@app.route('/admin/dashboard')
 def admin_dashboard():
-    total_users = User.query.filter_by(role='user').count()
-    total_items = MenuItem.query.count()
+    user = current_user()
+    if not user or user.role != 'admin':
+        flash("Para lamang sa Admin ang pahinang ito.", "danger")
+        return redirect(url_for('login'))
     total_orders = Order.query.count()
-    pending_orders = Order.query.filter(Order.status.in_(['pending', 'preparing'])).count()
-    total_reservations = Reservation.query.count()
-    pending_reservations = Reservation.query.filter(Reservation.status.in_(['pending', 'confirmed'])).count()
-
-    revenue_res = db.session.query(db.func.coalesce(db.func.sum(Order.total), 0.0))\
-        .filter(Order.status != 'cancelled').scalar()
-    revenue = float(revenue_res or 0.0)
-
-    recent_orders = Order.query.order_by(Order.created_at.desc()).limit(8).all()
-    upcoming_reservations = Reservation.query.order_by(Reservation.reservation_date.desc(), Reservation.reservation_time.desc()).limit(6).all()
-
-    return render_template(
-        'admin_dashboard.html',
-        total_users=total_users,
-        total_items=total_items,
-        total_orders=total_orders,
-        pending_orders=pending_orders,
-        total_reservations=total_reservations,
-        pending_reservations=pending_reservations,
-        revenue=revenue,
-        recent_orders=recent_orders,
-        upcoming_reservations=upcoming_reservations
-    )
-
+    pending_orders = Order.query.filter_by(status='pending').count()
+    total_sales = db.session.query(db.func.sum(Order.total_amount)).filter_by(payment_status='paid').scalar() or 0.0
+    total_users = User.query.count()
+    recent_orders = Order.query.order_by(Order.created_at.desc()).limit(5).all()
+    return render_template('admin_dashboard.html',
+                           total_orders=total_orders,
+                           pending_orders=pending_orders,
+                           total_sales=total_sales,
+                           total_users=total_users,
+                           recent_orders=recent_orders)
 
 @app.route('/admin/orders')
-@login_required
-@admin_required
 def admin_orders():
-    status_filter = request.args.get('status', 'all')
-    type_filter = request.args.get('type', 'all')
+    user = current_user()
+    if not user or user.role != 'admin':
+        return redirect(url_for('login'))
+    orders = Order.query.order_by(Order.created_at.desc()).all()
+    return render_template('admin_orders.html', orders=orders)
 
-    query = Order.query
-
-    if status_filter != 'all':
-        query = query.filter_by(status=status_filter)
-    if type_filter != 'all':
-        query = query.filter_by(order_type=type_filter)
-
-    all_orders = query.order_by(Order.created_at.desc()).all()
-
-    return render_template(
-        'admin_orders.html',
-        orders=all_orders,
-        active_status=status_filter,
-        active_type=type_filter
-    )
-
-
-@app.route('/admin/orders/status/<int:order_id>', methods=['POST'])
-@login_required
-@admin_required
-def admin_order_status(order_id):
-    order = Order.query.get(order_id)
-    new_status = request.form.get('status')
-
-    valid_statuses = ('pending', 'preparing', 'ready', 'completed', 'cancelled')
-    if order and new_status in valid_statuses:
-        if new_status == 'cancelled' and order.status != 'cancelled':
-            if order.payment_method == 'wallet' and order.payment_status == 'paid':
-                order.user.wallet_balance += order.total
-                order.payment_status = 'refunded'
-                flash(f'Order #{order.id} cancelled. ₱{order.total:.2f} refunded to {order.user.name}.', 'info')
-
+@app.route('/admin/order/<int:order_id>/status', methods=['POST'])
+def update_order_status(order_id):
+    user = current_user()
+    if not user or user.role != 'admin':
+        return redirect(url_for('login'))
+    order = db.session.get(Order, order_id)
+    if order:
+        new_status = request.form.get('status')
         order.status = new_status
+        if new_status == 'completed' and order.payment_method == 'cash_on_pickup':
+            order.payment_status = 'paid'
         db.session.commit()
-        flash(f'Order #{order_id} marked as {new_status.upper()}.', 'success')
+        flash(f"Na-update ang status ng Order #{order.id} sa {new_status}.", "success")
+    return redirect(url_for('admin_orders'))
 
-    return redirect(request.referrer or url_for('admin_orders'))
-
+@app.route('/admin/menu', methods=['GET', 'POST'])
+def admin_menu():
+    user = current_user()
+    if not user or user.role != 'admin':
+        return redirect(url_for('login'))
+    if request.method == 'POST':
+        name = request.form.get('name')
+        category = request.form.get('category')
+        price = float(request.form.get('price', 0))
+        description = request.form.get('description', '')
+        item = MenuItem(name=name, category=category, price=price, description=description)
+        db.session.add(item)
+        db.session.commit()
+        flash("Matagumpay na naidagdag ang bagong ulam/pagkain!", "success")
+        return redirect(url_for('admin_menu'))
+    items = MenuItem.query.all()
+    return render_template('admin_menu.html', items=items)
 
 @app.route('/admin/reservations')
-@login_required
-@admin_required
 def admin_reservations():
-    status_filter = request.args.get('status', 'all')
-    date_filter = request.args.get('date', '').strip()
-
-    query = Reservation.query
-
-    if status_filter != 'all':
-        query = query.filter_by(status=status_filter)
-    if date_filter:
-        query = query.filter_by(reservation_date=date_filter)
-
-    reservations_list = query.order_by(Reservation.reservation_date.desc(), Reservation.reservation_time.desc()).all()
-
-    return render_template(
-        'admin_reservations.html',
-        reservations=reservations_list,
-        active_status=status_filter,
-        active_date=date_filter
-    )
-
-
-@app.route('/admin/reservations/status/<int:reservation_id>', methods=['POST'])
-@login_required
-@admin_required
-def admin_reservation_status(reservation_id):
-    res = Reservation.query.get(reservation_id)
-    new_status = request.form.get('status')
-
-    valid_statuses = ('pending', 'confirmed', 'seated', 'completed', 'cancelled')
-    if res and new_status in valid_statuses:
-        res.status = new_status
-        db.session.commit()
-        flash(f'Reservation #{res.id} ({res.customer_name}) marked as {new_status.upper()}.', 'success')
-
-    return redirect(request.referrer or url_for('admin_reservations'))
-
-
-@app.route('/admin/menu')
-@login_required
-@admin_required
-def admin_menu():
-    items = MenuItem.query.order_by(MenuItem.category, MenuItem.name).all()
-    categories = [c[0] for c in db.session.query(MenuItem.category).distinct().all()]
-    return render_template('admin_menu.html', items=items, categories=categories)
-
-
-@app.route('/admin/menu/add', methods=['POST'])
-@login_required
-@admin_required
-def admin_menu_add():
-    name = request.form.get('name', '').strip()
-    description = request.form.get('description', '').strip()
-    category = request.form.get('category', 'General').strip() or 'General'
-    image_url = request.form.get('image_url', '').strip()
-    prep_time = request.form.get('prep_time', '15 mins').strip() or '15 mins'
-
-    try:
-        price = float(request.form.get('price', 0))
-    except ValueError:
-        price = 0.0
-
-    if not name or price <= 0:
-        flash('Item name and a valid price (> 0) are required.', 'danger')
-        return redirect(url_for('admin_menu'))
-
-    new_item = MenuItem(
-        name=name,
-        description=description,
-        price=price,
-        category=category,
-        available=True,
-        image_url=image_url or '🍽️',
-        prep_time=prep_time
-    )
-    db.session.add(new_item)
-    db.session.commit()
-    flash(f'Successfully added "{name}" to the menu.', 'success')
-    return redirect(url_for('admin_menu'))
-
-
-@app.route('/admin/menu/toggle/<int:item_id>', methods=['POST'])
-@login_required
-@admin_required
-def admin_menu_toggle(item_id):
-    item = MenuItem.query.get(item_id)
-    if item:
-        item.available = not item.available
-        db.session.commit()
-        status_text = 'Available' if item.available else 'Hidden'
-        flash(f'"{item.name}" is now marked as {status_text}.', 'info')
-    return redirect(url_for('admin_menu'))
-
-
-@app.route('/admin/menu/delete/<int:item_id>', methods=['POST'])
-@login_required
-@admin_required
-def admin_menu_delete(item_id):
-    item = MenuItem.query.get(item_id)
-    if item:
-        db.session.delete(item)
-        db.session.commit()
-        flash(f'Deleted "{item.name}" from the menu.', 'info')
-    return redirect(url_for('admin_menu'))
-
+    user = current_user()
+    if not user or user.role != 'admin':
+        return redirect(url_for('login'))
+    reservations = Reservation.query.order_by(Reservation.reservation_date.desc()).all()
+    return render_template('admin_reservations.html', reservations=reservations)
 
 @app.route('/admin/users')
-@login_required
-@admin_required
 def admin_users():
-    users = User.query.filter_by(role='user').order_by(User.name).all()
+    user = current_user()
+    if not user or user.role != 'admin':
+        return redirect(url_for('login'))
+    users = User.query.all()
     return render_template('admin_users.html', users=users)
 
+# Database Table Creation at Initial Data
+with app.app_context():
+    db.create_all()
+    # Lumikha ng default admin kung wala pa
+    if not User.query.filter_by(username='admin').first():
+        admin = User(
+            username='admin',
+            password=generate_password_hash('admin123'),
+            role='admin',
+            name='Canteen Administrator'
+        )
+        db.session.add(admin)
 
-@app.route('/admin/users/topup/<int:user_id>', methods=['POST'])
-@login_required
-@admin_required
-def admin_user_topup(user_id):
-    user = User.query.get(user_id)
-    try:
-        amount = float(request.form.get('amount', 0))
-    except ValueError:
-        amount = 0.0
+    # Lumikha ng default student kung wala pa
+    if not User.query.filter_by(username='student').first():
+        student = User(
+            username='student',
+            password=generate_password_hash('student123'),
+            role='student',
+            name='CMDI Student',
+            wallet_balance=750.0
+        )
+        db.session.add(student)
 
-    if user and amount > 0:
-        user.wallet_balance += amount
-        db.session.commit()
-        flash(f'Added ₱{amount:.2f} credit to {user.name}\'s wallet.', 'success')
-    else:
-        flash('Invalid top-up amount.', 'danger')
+    # Initial Menu Items kung bakante ang listahan
+    if MenuItem.query.count() == 0:
+        sample_menu = [
+            MenuItem(name="Chicken Adobo with Rice", category="Meals", price=65.0, description="Classic Pinoy adobo with steaming hot rice"),
+            MenuItem(name="Pork Sinigang with Rice", category="Meals", price=75.0, description="Sour and savory soup with fresh vegetables"),
+            MenuItem(name="Beef Caldereta with Rice", category="Meals", price=85.0, description="Rich tomato stew with tender beef chunks"),
+            MenuItem(name="Crispy Lumpiang Shanghai (4pcs)", category="Snacks", price=35.0, description="Crunchy spring rolls with sweet chili sauce"),
+            MenuItem(name="Pancit Canton Guisado", category="Snacks", price=40.0, description="Stir-fried noodles loaded with veggies and meat"),
+            MenuItem(name="Iced Calamansi Juice", category="Drinks", price=20.0, description="Refreshing local citrus drink"),
+            MenuItem(name="Bottled Mineral Water (500ml)", category="Drinks", price=15.0, description="Purified drinking water"),
+            MenuItem(name="Special Halo-Halo", category="Desserts", price=50.0, description="Shaved ice dessert with sweet beans, jelly, and ube")
+        ]
+        db.session.bulk_save_objects(sample_menu)
 
-    return redirect(url_for('admin_users'))
-
+    db.session.commit()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
