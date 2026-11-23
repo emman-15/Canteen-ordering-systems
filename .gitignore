@@ -1,0 +1,28 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment files with sensitive credentials
+.env
+.env.local
+
+# Local SQLite databases (Neon is used for cloud storage)
+*.db
+*.sqlite
+*.sqlite3
+
+# Operating System & IDE junk
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.log

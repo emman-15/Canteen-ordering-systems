@@ -1,0 +1,262 @@
+{% extends 'base.html' %}
+{% block title %}Shopping Cart &amp; Checkout - Canteen Hub{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+  <div class="col-12">
+    <h2 class="fw-bold mb-1">🛒 Review Your Order</h2>
+    <p class="text-muted">Select pickup or dine-in, choose your preferred payment method, and complete your order.</p>
+  </div>
+</div>
+
+{% if line_items %}
+<div class="row g-4">
+  <!-- Left Column: Cart Items -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm mb-4">
+      <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0 fw-bold"><i class="bi bi-basket me-2 text-success"></i>Order Items</h5>
+        <span class="badge bg-success-subtle text-success">{{ line_items|length }} Unique Item(s)</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th class="ps-4">Item</th>
+                <th>Price</th>
+                <th style="width: 140px;">Quantity</th>
+                <th>Subtotal</th>
+                <th class="pe-4 text-end">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for li in line_items %}
+              <tr>
+                <td class="ps-4">
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="fs-4">{{ li.item.image_url if li.item.image_url else '🍲' }}</span>
+                    <div>
+                      <div class="fw-bold">{{ li.item.name }}</div>
+                      <small class="text-muted">{{ li.item.category }}</small>
+                    </div>
+                  </div>
+                </td>
+                <td class="fw-semibold">₱{{ '%.2f'|format(li.item.price) }}</td>
+                <td>
+                  <form method="POST" action="{{ url_for('update_cart', item_id=li.item.id) }}" class="d-flex align-items-center gap-1">
+                    <input type="number" name="qty" value="{{ li.qty }}" min="1" max="50" class="form-control form-control-sm text-center" style="max-width: 65px;">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary" title="Update Quantity">
+                      <i class="bi bi-arrow-repeat"></i>
+                    </button>
+                  </form>
+                </td>
+                <td class="fw-bold text-success">₱{{ '%.2f'|format(li.subtotal) }}</td>
+                <td class="pe-4 text-end">
+                  <form method="POST" action="{{ url_for('remove_from_cart', item_id=li.item.id) }}">
+                    <button type="submit" class="btn btn-sm btn-outline-danger border-0" title="Remove item">
+                      <i class="bi bi-trash3"></i>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-footer bg-white py-3 ps-4 d-flex justify-content-between align-items-center">
+        <a href="{{ url_for('menu') }}" class="btn btn-outline-secondary btn-sm">
+          <i class="bi bi-arrow-left me-1"></i> Add More Items
+        </a>
+        <div class="fs-5">
+          <span class="text-muted">Subtotal:</span>
+          <span class="fw-bold text-success ms-2">₱{{ '%.2f'|format(total) }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column: Checkout Options & Payment -->
+  <div class="col-lg-5">
+    <div class="card shadow-sm border-0 sticky-top" style="top: 85px;">
+      <div class="card-header bg-success text-white py-3">
+        <h5 class="mb-0 fw-bold"><i class="bi bi-credit-card-2-front me-2"></i>Checkout &amp; Options</h5>
+      </div>
+      <div class="card-body p-4">
+        <form method="POST" action="{{ url_for('checkout') }}" id="checkoutForm">
+          <!-- 1. Order Type Selection -->
+          <div class="mb-3">
+            <label class="form-label fw-bold">1. Order Type</label>
+            <div class="row g-2">
+              <div class="col-6">
+                <input type="radio" class="btn-check" name="order_type" id="typePickup" value="pickup" checked onchange="toggleOrderType()">
+                <label class="btn btn-outline-success w-100 py-2 d-flex flex-column align-items-center" for="typePickup">
+                  <i class="bi bi-bag-check fs-4 mb-1"></i>
+                  <span>🥡 Takeout / Pickup</span>
+                </label>
+              </div>
+              <div class="col-6">
+                <input type="radio" class="btn-check" name="order_type" id="typeDineIn" value="dine_in" onchange="toggleOrderType()">
+                <label class="btn btn-outline-success w-100 py-2 d-flex flex-column align-items-center" for="typeDineIn">
+                  <i class="bi bi-shop-window fs-4 mb-1"></i>
+                  <span>🪑 Dine-in Table</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Reservation Link (Shows only if Dine-In selected) -->
+          <div class="mb-3 d-none" id="reservationLinkBox">
+            <label class="form-label fw-bold text-primary">
+              <i class="bi bi-link-45deg me-1"></i>Link to Table Reservation
+            </label>
+            {% if active_reservations %}
+              <select name="reservation_id" class="form-select border-primary">
+                <option value="">-- Standalone Dine-in (No Table Link) --</option>
+                {% for res in active_reservations %}
+                  <option value="{{ res.id }}">
+                    Res #{{ res.id }} - {{ res.reservation_date }} @ {{ res.reservation_time }} ({{ res.table_preference }})
+                  </option>
+                {% endfor %}
+              </select>
+              <div class="form-text small">Your food will be prepared and served at your reserved table.</div>
+            {% else %}
+              <div class="alert alert-info py-2 px-3 small mb-1">
+                You don't have an active table reservation. You can book a table first or order directly for dine-in.
+              </div>
+              <a href="{{ url_for('reservations') }}" class="btn btn-outline-primary btn-sm w-100 mt-1">
+                <i class="bi bi-calendar-plus me-1"></i> Book a Table First
+              </a>
+            {% endif %}
+          </div>
+
+          <!-- 2. Pickup / Serving Time -->
+          <div class="mb-3">
+            <label class="form-label fw-bold" id="timeLabel">2. Preferred Pickup Time</label>
+            <div class="input-group">
+              <span class="input-group-text bg-white"><i class="bi bi-clock"></i></span>
+              <input type="text" name="pickup_time" class="form-control" placeholder="e.g. ASAP (15 mins), 12:30 PM, or 1:00 PM" required value="ASAP">
+            </div>
+            <div class="form-text small">Tell kitchen staff when you want your meal ready.</div>
+          </div>
+
+          <!-- 3. Special Instructions -->
+          <div class="mb-3">
+            <label class="form-label fw-bold">3. Cooking Instructions (Optional)</label>
+            <input type="text" name="special_instructions" class="form-control" placeholder="e.g. Less spicy, extra calamansi, no onions">
+          </div>
+
+          <!-- 4. Payment Method -->
+          <div class="mb-4">
+            <label class="form-label fw-bold">4. Select Payment Method</label>
+            
+            <!-- In-App Wallet Option -->
+            <div class="form-check p-3 border rounded-3 mb-2 bg-light d-flex align-items-center justify-content-between">
+              <div>
+                <input class="form-check-input" type="radio" name="payment_method" id="payWallet" value="wallet" checked>
+                <label class="form-check-label ms-2 fw-semibold" for="payWallet">
+                  <i class="bi bi-wallet2 text-success me-1"></i> In-App Wallet Balance
+                </label>
+              </div>
+              <div class="text-end">
+                <span class="badge {% if current_user.wallet_balance >= total %}bg-success{% else %}bg-danger{% endif %}">
+                  ₱{{ '%.2f'|format(current_user.wallet_balance) }} available
+                </span>
+              </div>
+            </div>
+
+            <!-- Simulated GCash -->
+            <div class="form-check p-3 border rounded-3 mb-2 d-flex align-items-center justify-content-between">
+              <div>
+                <input class="form-check-input" type="radio" name="payment_method" id="payGcash" value="gcash">
+                <label class="form-check-label ms-2 fw-semibold" for="payGcash">
+                  <i class="bi bi-phone text-primary me-1"></i> GCash (Instant Cashless)
+                </label>
+              </div>
+              <span class="badge bg-primary-subtle text-primary">Simulated</span>
+            </div>
+
+            <!-- Simulated Maya -->
+            <div class="form-check p-3 border rounded-3 mb-2 d-flex align-items-center justify-content-between">
+              <div>
+                <input class="form-check-input" type="radio" name="payment_method" id="payMaya" value="maya">
+                <label class="form-check-label ms-2 fw-semibold" for="payMaya">
+                  <i class="bi bi-credit-card-2-back text-info me-1"></i> Maya (Instant Cashless)
+                </label>
+              </div>
+              <span class="badge bg-info-subtle text-info">Simulated</span>
+            </div>
+
+            <!-- Cash on Pickup -->
+            <div class="form-check p-3 border rounded-3 d-flex align-items-center justify-content-between">
+              <div>
+                <input class="form-check-input" type="radio" name="payment_method" id="payCash" value="cash">
+                <label class="form-check-label ms-2 fw-semibold" for="payCash">
+                  <i class="bi bi-cash-stack text-warning me-1"></i> Cash on Pickup / Counter
+                </label>
+              </div>
+              <span class="badge bg-secondary-subtle text-secondary">Pay at counter</span>
+            </div>
+          </div>
+
+          <!-- Total Summary Box -->
+          <div class="p-3 bg-light rounded-3 mb-3">
+            <div class="d-flex justify-content-between mb-1">
+              <span class="text-muted">Item Subtotal:</span>
+              <span class="fw-semibold">₱{{ '%.2f'|format(total) }}</span>
+            </div>
+            <div class="d-flex justify-content-between mb-2">
+              <span class="text-muted">Service &amp; Packaging:</span>
+              <span class="text-success fw-bold">FREE</span>
+            </div>
+            <hr class="my-2">
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="fw-bold fs-5">Grand Total:</span>
+              <span class="fw-bold fs-4 text-success">₱{{ '%.2f'|format(total) }}</span>
+            </div>
+          </div>
+
+          <!-- Checkout Submit Button -->
+          <button type="submit" class="btn btn-success btn-lg w-100 py-3 fw-bold shadow-sm">
+            <i class="bi bi-check2-circle me-1"></i> Confirm &amp; Place Order
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% else %}
+<!-- Empty Cart State -->
+<div class="card p-5 text-center shadow-sm">
+  <div class="display-1 text-muted mb-3">🛒</div>
+  <h3 class="fw-bold">Your cart is empty</h3>
+  <p class="text-muted mb-4">You haven't added any items to your tray yet. Check out our fresh canteen specials!</p>
+  <div>
+    <a href="{{ url_for('menu') }}" class="btn btn-success btn-lg px-4 shadow-sm">
+      <i class="bi bi-book me-1"></i> Browse Today's Menu
+    </a>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleOrderType() {
+  const isDineIn = document.getElementById('typeDineIn').checked;
+  const resBox = document.getElementById('reservationLinkBox');
+  const timeLabel = document.getElementById('timeLabel');
+  
+  if (isDineIn) {
+    resBox.classList.remove('d-none');
+    timeLabel.innerText = "2. Preferred Dine-In / Serving Time";
+  } else {
+    resBox.classList.add('d-none');
+    timeLabel.innerText = "2. Preferred Pickup Time";
+  }
+}
+</script>
+{% endblock %}
