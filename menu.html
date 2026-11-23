@@ -10,7 +10,6 @@
     </div>
 </div>
 
-<!-- CATEGORY FILTER PILLS -->
 <div class="d-flex flex-wrap gap-2 mb-4">
     {% for cat in categories %}
         <a href="{{ url_for('menu', category=cat) }}" 
@@ -20,7 +19,6 @@
     {% endfor %}
 </div>
 
-<!-- MENU ITEMS GRID -->
 <div class="row g-4">
     {% for item in items %}
     <div class="col-md-6 col-lg-3">
