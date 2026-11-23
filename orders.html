@@ -1,150 +1,51 @@
 {% extends 'base.html' %}
-{% block title %}My Orders - Canteen Hub{% endblock %}
+
+{% block title %}My Orders - CMDI Canteen{% endblock %}
 
 {% block content %}
-<div class="row align-items-center mb-4">
-  <div class="col-md-8">
-    <h2 class="fw-bold mb-1">🧾 My Orders &amp; Receipts</h2>
-    <p class="text-muted mb-0">Track real-time cooking progress, pickup times, and view order receipts.</p>
-  </div>
-  <div class="col-md-4 text-md-end mt-2 mt-md-0">
-    <a href="{{ url_for('menu') }}" class="btn btn-success shadow-sm">
-      <i class="bi bi-plus-circle me-1"></i> Place New Order
-    </a>
-  </div>
-</div>
+<h2 class="fw-bold mb-4" style="color: var(--cmdi-blue);"><i class="fa-solid fa-receipt me-2 text-warning"></i>Aking mga Order</h2>
 
 {% if orders %}
-  <div class="row g-4">
+<div class="row g-3">
     {% for order in orders %}
-      <div class="col-lg-6">
-        <div class="card shadow-sm border-0 h-100">
-          <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+    <div class="col-md-6 col-lg-4">
+        <div class="card card-custom p-3 shadow-sm h-100 d-flex flex-column justify-content-between">
             <div>
-              <span class="fw-bold fs-5 text-dark">Order #{{ order.id }}</span>
-              <span class="badge ms-2 {% if order.order_type == 'dine_in' %}bg-primary-subtle text-primary{% else %}bg-success-subtle text-success{% endif %}">
-                {% if order.order_type == 'dine_in' %}🪑 Dine-in{% else %}🥡 Takeout{% endif %}
-              </span>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="fw-bold" style="color: var(--cmdi-blue);">Order #{{ order.id }}</span>
+                    <span class="badge {% if order.status == 'completed' %}bg-success{% elif order.status == 'preparing' %}bg-warning text-dark{% else %}bg-primary{% endif %}">
+                        {{ order.status|upper }}
+                    </span>
+                </div>
+                <p class="small text-muted mb-2">{{ order.created_at.strftime('%b %d, %Y - %I:%M %p') }}</p>
+                <div class="border-top pt-2 mb-2">
+                    <span class="badge bg-light text-dark border me-1">{{ order.order_type|upper }}</span>
+                    <span class="badge bg-light text-dark border">{{ order.payment_method }} ({{ order.payment_status }})</span>
+                </div>
+                <ul class="list-unstyled small mb-3">
+                    {% for item in order.items %}
+                    <li class="d-flex justify-content-between text-muted">
+                        <span>{{ item.quantity }}x {{ item.menu_item.name if item.menu_item else 'Item' }}</span>
+                        <span>₱{{ '%.2f'|format(item.price * item.quantity) }}</span>
+                    </li>
+                    {% endfor %}
+                </ul>
             </div>
-            <span class="badge badge-status badge-{{ order.status }}">
-              {{ order.status }}
-            </span>
-          </div>
-
-          <div class="card-body">
-            <!-- Visual Order Stepper Tracker (for active orders) -->
-            {% if order.status != 'cancelled' %}
-              <div class="order-stepper">
-                <div class="step-item {% if order.status in ('pending', 'preparing', 'ready', 'completed') %}active{% endif %}">
-                  <div class="step-dot"><i class="bi bi-clock"></i></div>
-                  <div class="step-label">Received</div>
-                </div>
-                <div class="step-item {% if order.status in ('preparing', 'ready', 'completed') %}active{% endif %}">
-                  <div class="step-dot"><i class="bi bi-fire"></i></div>
-                  <div class="step-label">Cooking</div>
-                </div>
-                <div class="step-item {% if order.status in ('ready', 'completed') %}active{% endif %}">
-                  <div class="step-dot"><i class="bi bi-bell"></i></div>
-                  <div class="step-label">Ready</div>
-                </div>
-                <div class="step-item {% if order.status == 'completed' %}active{% endif %}">
-                  <div class="step-dot"><i class="bi bi-check-lg"></i></div>
-                  <div class="step-label">Done</div>
-                </div>
-              </div>
-            {% else %}
-              <div class="alert alert-danger py-2 small mb-3">
-                <i class="bi bi-x-circle me-1"></i> This order was cancelled.
-                {% if order.payment_status == 'refunded' %}
-                  Amount has been refunded to your wallet.
-                {% endif %}
-              </div>
-            {% endif %}
-
-            <!-- Order Metadata Details -->
-            <div class="bg-light p-3 rounded-3 small mb-3">
-              <div class="row g-2">
-                <div class="col-6">
-                  <span class="text-muted d-block">Placed At:</span>
-                  <strong>{{ order.created_at[:16].replace('T', ' ') }}</strong>
-                </div>
-                <div class="col-6">
-                  <span class="text-muted d-block">Scheduled Time:</span>
-                  <strong><i class="bi bi-alarm me-1 text-success"></i>{{ order.pickup_time }}</strong>
-                </div>
-                <div class="col-6">
-                  <span class="text-muted d-block">Payment Method:</span>
-                  <strong class="text-uppercase">{{ order.payment_method }} ({{ order.payment_status }})</strong>
-                </div>
-                <div class="col-6">
-                  {% if order.reservation_id %}
-                    <span class="text-muted d-block">Linked Reservation:</span>
-                    <strong class="text-primary">Table Res #{{ order.reservation_id }}</strong>
-                  {% else %}
-                    <span class="text-muted d-block">Service:</span>
-                    <strong>Standard {{ order.order_type.capitalize() }}</strong>
-                  {% endif %}
-                </div>
-                {% if order.special_instructions %}
-                  <div class="col-12 mt-1 pt-1 border-top">
-                    <span class="text-muted">Instructions:</span>
-                    <em>"{{ order.special_instructions }}"</em>
-                  </div>
-                {% endif %}
-              </div>
+            <div class="d-flex justify-content-between align-items-center border-top pt-2">
+                <span class="fw-bold">Kabuoan:</span>
+                <span class="fw-bold fs-5" style="color: var(--cmdi-orange);">₱{{ '%.2f'|format(order.total_amount) }}</span>
             </div>
-
-            <!-- Itemized List -->
-            <div class="table-responsive">
-              <table class="table table-sm align-middle mb-0">
-                <thead class="text-muted small">
-                  <tr>
-                    <th>Item</th>
-                    <th class="text-center">Qty</th>
-                    <th class="text-end">Subtotal</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for item in order.items %}
-                    <tr>
-                      <td>{{ item.item_name }}</td>
-                      <td class="text-center">{{ item.qty }}</td>
-                      <td class="text-end fw-semibold">₱{{ '%.2f'|format(item.price * item.qty) }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="card-footer bg-white py-3 d-flex justify-content-between align-items-center">
-            <div>
-              <span class="text-muted small">Total: </span>
-              <span class="fw-bold fs-5 text-success">₱{{ '%.2f'|format(order.total) }}</span>
-            </div>
-
-            {% if order.status == 'pending' %}
-              <form method="POST" action="{{ url_for('cancel_order', order_id=order.id) }}" onsubmit="return confirm('Cancel this order? If paid with wallet, amount will be instantly refunded.');">
-                <button type="submit" class="btn btn-outline-danger btn-sm">
-                  <i class="bi bi-x-circle me-1"></i> Cancel Order
-                </button>
-              </form>
-            {% endif %}
-          </div>
         </div>
-      </div>
-    {% endfor %}
-  </div>
-{% else %}
-  <div class="card p-5 text-center shadow-sm">
-    <div class="display-1 text-muted mb-3">🧾</div>
-    <h3 class="fw-bold">No orders yet</h3>
-    <p class="text-muted mb-4">When you place an online order for takeout or dine-in, it will appear here for live tracking.</p>
-    <div>
-      <a href="{{ url_for('menu') }}" class="btn btn-success btn-lg px-4 shadow-sm">
-        <i class="bi bi-book me-1"></i> Order Food Now
-      </a>
     </div>
-  </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-5 card card-custom p-5">
+    <i class="fa-solid fa-receipt fa-3x text-muted mb-3"></i>
+    <h4 class="text-muted mb-3">Wala ka pang nagagawang order.</h4>
+    <a href="{{ url_for('menu') }}" class="btn btn-cmdi-orange px-4 py-2 rounded-pill d-inline-block">
+        Umorder sa Menu
+    </a>
+</div>
 {% endif %}
 {% endblock %}
