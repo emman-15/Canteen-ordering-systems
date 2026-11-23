@@ -38,7 +38,7 @@ MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com'
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin gamit ang SSL (Port 465) at TLS (Port 587)"""
+    """Nagpapadala ng email sa admin sa background"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
         return
@@ -57,10 +57,10 @@ def send_admin_email_async(subject, html_content):
             with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
                 server.login(MAIL_USERNAME, clean_password)
                 server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (SSL Port 465)")
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via SSL)")
             return
         except Exception as e_ssl:
-            print(f"[EMAIL SSL fallback]: {e_ssl}")
+            print(f"[EMAIL SSL Retry TLS]: {e_ssl}")
 
         # Subok 2: TLS Port 587
         try:
@@ -68,7 +68,7 @@ def send_admin_email_async(subject, html_content):
                 server.starttls()
                 server.login(MAIL_USERNAME, clean_password)
                 server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (TLS Port 587)")
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via TLS)")
         except Exception as e_tls:
             print(f"[EMAIL ERROR] Hindi naipadala ang email: {e_tls}")
 
@@ -140,75 +140,48 @@ def current_user():
 def inject_user():
     return dict(current_user=current_user(), now=datetime.utcnow())
 
-# --- DIAGNOSTIC TEST ROUTE PARA SA EMAIL ---
+# --- EMAIL TEST ROUTE ---
 @app.route('/test-email')
 def test_email():
     clean_password = (MAIL_PASSWORD or '').replace(' ', '').strip()
-    
-    if MAIL_USERNAME:
-        user_disp = MAIL_USERNAME
-    else:
-        user_disp = "<span style='color:red;'>HINDI NAKA-SET</span>"
-
-    if clean_password:
-        pass_disp = f"Naka-set ({len(clean_password)} characters)"
-    else:
-        pass_disp = "<span style='color:red;'>HINDI NAKA-SET</span>"
-
-    status_html = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 650px; margin: 40px auto; padding: 25px; border: 2px solid #0d3b66; border-radius: 10px;">
-        <h2 style="color: #0d3b66; margin-top: 0;">CMDI Canteen - Email Diagnostic Test</h2>
-        <table style="width: 100%; margin-bottom: 20px;">
-            <tr><td><strong>ADMIN_EMAIL:</strong></td><td>{ADMIN_EMAIL}</td></tr>
-            <tr><td><strong>MAIL_USERNAME:</strong></td><td>{user_disp}</td></tr>
-            <tr><td><strong>MAIL_PASSWORD:</strong></td><td>{pass_disp}</td></tr>
-        </table>
-    """
+    user_txt = MAIL_USERNAME if MAIL_USERNAME else "HINDI NAKA-SET"
+    pass_txt = f"Naka-set ({len(clean_password)} characters)" if clean_password else "HINDI NAKA-SET"
 
     if not MAIL_USERNAME or not clean_password:
-        status_html += """
-        <div style="background-color: #ffebee; color: #c62828; padding: 15px; border-radius: 6px;">
-            <strong>KULANG ANG ENVIRONMENT SETTINGS:</strong><br>
-            Pumunta sa Render -> Canteen-ordering-systems-6 -> Environment.<br>
-            Siguraduhing naka-save ang <code>MAIL_USERNAME</code> at <code>MAIL_PASSWORD</code>.
-        </div></div>
+        return f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
+            <h3 style="color: red;">KULANG ANG EMAIL SETTINGS SA RENDER:</h3>
+            <p><strong>MAIL_USERNAME:</strong> {user_txt}</p>
+            <p><strong>MAIL_PASSWORD:</strong> {pass_txt}</p>
+            <p>Pumunta sa Render -> Environment at i-set ang dalawang ito.</p>
+        </div>
         """
-        return status_html
 
     msg = MIMEMultipart('alternative')
-    msg['Subject'] = "[TEST] CMDI Canteen Email Test Notification"
+    msg['Subject'] = "[TEST] CMDI Canteen Email Notification Test"
     msg['From'] = f"CMDI Canteen <{MAIL_USERNAME}>"
     msg['To'] = ADMIN_EMAIL
-    msg.attach(MIMEText("<h3>Matagumpay ang Email Test ng CMDI Canteen!</h3><p>Nakatanggap ka ng test notification. Gumagana na ang email para sa mga orders!</p>", 'html'))
+    msg.attach(MIMEText("<h3>Matagumpay ang Email Test ng CMDI Canteen!</h3><p>Gumagana na ang email notification para sa mga bagong order.</p>", 'html'))
 
     try:
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
             server.login(MAIL_USERNAME, clean_password)
             server.send_message(msg)
-        status_html += f"""
-        <div style="background-color: #e8f5e9; color: #2e7d32; padding: 15px; border-radius: 6px;">
-            <strong>SUCCESS!</strong> Matagumpay na naipadala ang email kay <strong>{ADMIN_EMAIL}</strong>!<br>
-            Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.
-        </div></div>
+        return f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px;">
+            <h3 style="color: green;">SUCCESS! Naipadala ang test email kay {ADMIN_EMAIL}!</h3>
+            <p>Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.</p>
+        </div>
         """
-        return status_html
-    except smtplib.SMTPAuthenticationError as auth_err:
-        status_html += f"""
-        <div style="background-color: #ffebee; color: #c62828; padding: 15px; border-radius: 6px;">
-            <strong>AUTHENTICATION ERROR:</strong> Tinanggihan ni Google ang password.<br><br>
-            <em>Solusyon:</em> Kailangan ay <strong>16-letter Google App Password</strong> mula sa <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>.<br>
-            <small style="color: #666;">Google Error Code: {auth_err}</small>
-        </div></div>
-        """
-        return status_html
     except Exception as e:
-        status_html += f"""
-        <div style="background-color: #fff3e0; color: #e65100; padding: 15px; border-radius: 6px;">
-            <strong>ERROR:</strong> {e}
-        </div></div>
+        return f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
+            <h3 style="color: red;">ERROR SA PAGPADALA:</h3>
+            <p>{e}</p>
+            <p><em>Paalala:</em> Kailangan ay <strong>16-letter Google App Password</strong> ang ilagay sa Render.</p>
+        </div>
         """
-        return status_html
 
 # --- ROUTES ---
 @app.route('/')
