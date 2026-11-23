@@ -1,5 +1,6 @@
 import os
 import ssl
+import socket
 import smtplib
 import threading
 from email.mime.text import MIMEText
@@ -9,6 +10,12 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from jinja2 import ChoiceLoader, FileSystemLoader
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+
+# FORCE IPv4 ONLY (Inaayos ang Render Errno 101 Network is unreachable)
+_orig_getaddrinfo = socket.getaddrinfo
+def _getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+socket.getaddrinfo = _getaddrinfo_ipv4
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = os.environ.get('SECRET_KEY', 'cmdi_canteen_super_secret_key_2026')
@@ -38,7 +45,7 @@ MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com'
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin sa background"""
+    """Nagpapadala ng email sa admin sa background gamit ang IPv4"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
         return
@@ -51,26 +58,26 @@ def send_admin_email_async(subject, html_content):
         msg['To'] = ADMIN_EMAIL
         msg.attach(MIMEText(html_content, 'html'))
 
-        # Subok 1: SSL Port 465
-        try:
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
-                server.login(MAIL_USERNAME, clean_password)
-                server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via SSL)")
-            return
-        except Exception as e_ssl:
-            print(f"[EMAIL SSL Retry TLS]: {e_ssl}")
-
-        # Subok 2: TLS Port 587
+        # Subok 1: TLS Port 587
         try:
             with smtplib.SMTP('smtp.gmail.com', 587, timeout=12) as server:
                 server.starttls()
                 server.login(MAIL_USERNAME, clean_password)
                 server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via TLS)")
-        except Exception as e_tls:
-            print(f"[EMAIL ERROR] Hindi naipadala ang email: {e_tls}")
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via Port 587)")
+            return
+        except Exception as e1:
+            print(f"[EMAIL Port 587 fail, trying 465]: {e1}")
+
+        # Subok 2: SSL Port 465
+        try:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
+                server.login(MAIL_USERNAME, clean_password)
+                server.send_message(msg)
+            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via Port 465)")
+        except Exception as e2:
+            print(f"[EMAIL Port 465 fail]: {e2}")
 
     threading.Thread(target=_send, daemon=True).start()
 
@@ -140,7 +147,7 @@ def current_user():
 def inject_user():
     return dict(current_user=current_user(), now=datetime.utcnow())
 
-# --- EMAIL TEST ROUTE ---
+# --- EMAIL DIAGNOSTIC TEST ROUTE ---
 @app.route('/test-email')
 def test_email():
     clean_password = (MAIL_PASSWORD or '').replace(' ', '').strip()
@@ -161,27 +168,49 @@ def test_email():
     msg['Subject'] = "[TEST] CMDI Canteen Email Notification Test"
     msg['From'] = f"CMDI Canteen <{MAIL_USERNAME}>"
     msg['To'] = ADMIN_EMAIL
-    msg.attach(MIMEText("<h3>Matagumpay ang Email Test ng CMDI Canteen!</h3><p>Gumagana na ang email notification para sa mga bagong order.</p>", 'html'))
+    msg.attach(MIMEText("<h3>Matagumpay ang Email Test ng CMDI Canteen!</h3><p>Nakatanggap ka ng test notification. Gumagana na ang email para sa mga orders!</p>", 'html'))
 
+    errors = []
+
+    # Subok 1: TLS Port 587
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587, timeout=12) as server:
+            server.starttls()
+            server.login(MAIL_USERNAME, clean_password)
+            server.send_message(msg)
+        return f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px; background-color: #f0fff4;">
+            <h3 style="color: green;">SUCCESS! (Nagamit ang Port 587)</h3>
+            <p>Matagumpay na naipadala ang email kay <strong>{ADMIN_EMAIL}</strong>!</p>
+            <p>Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.</p>
+        </div>
+        """
+    except Exception as e587:
+        errors.append(f"Port 587: {e587}")
+
+    # Subok 2: SSL Port 465
     try:
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
             server.login(MAIL_USERNAME, clean_password)
             server.send_message(msg)
         return f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px;">
-            <h3 style="color: green;">SUCCESS! Naipadala ang test email kay {ADMIN_EMAIL}!</h3>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px; background-color: #f0fff4;">
+            <h3 style="color: green;">SUCCESS! (Nagamit ang Port 465)</h3>
+            <p>Matagumpay na naipadala ang email kay <strong>{ADMIN_EMAIL}</strong>!</p>
             <p>Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.</p>
         </div>
         """
-    except Exception as e:
-        return f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
-            <h3 style="color: red;">ERROR SA PAGPADALA:</h3>
-            <p>{e}</p>
-            <p><em>Paalala:</em> Kailangan ay <strong>16-letter Google App Password</strong> ang ilagay sa Render.</p>
-        </div>
-        """
+    except Exception as e465:
+        errors.append(f"Port 465: {e465}")
+
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
+        <h3 style="color: red;">ERROR SA PAGPADALA:</h3>
+        <p>{'<br>'.join(errors)}</p>
+        <p><em>Paalala:</em> Kailangan ay <strong>16-letter Google App Password</strong> mula sa <a href="https://myaccount.google.com/apppasswords" target="_blank">Google App Passwords</a>.</p>
+    </div>
+    """
 
 # --- ROUTES ---
 @app.route('/')
