@@ -1,4 +1,6 @@
 import os
+import json
+import urllib.request
 import ssl
 import socket
 import smtplib
@@ -10,12 +12,6 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from jinja2 import ChoiceLoader, FileSystemLoader
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-
-# FORCE IPv4 ONLY (Inaayos ang Render Errno 101 Network is unreachable)
-_orig_getaddrinfo = socket.getaddrinfo
-def _getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
-    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-socket.getaddrinfo = _getaddrinfo_ipv4
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = os.environ.get('SECRET_KEY', 'cmdi_canteen_super_secret_key_2026')
@@ -41,43 +37,55 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 db = SQLAlchemy(app)
 
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'emmanuelbarbadillo05@gmail.com')
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
 MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com')
-MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
+MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '').strip()
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin sa background gamit ang IPv4"""
-    if not MAIL_USERNAME or not MAIL_PASSWORD:
-        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
-        return
-
+    """Nagpapadala ng email sa admin. Una nitong ginagamit ang HTTPS via Resend (Port 443)"""
     def _send():
-        clean_password = MAIL_PASSWORD.replace(' ', '').strip()
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = f"CMDI Canteen System <{MAIL_USERNAME}>"
-        msg['To'] = ADMIN_EMAIL
-        msg.attach(MIMEText(html_content, 'html'))
+        # Paraan 1: RESEND HTTPS API (100% lusot sa Render Free Firewall)
+        if RESEND_API_KEY:
+            try:
+                url = "https://api.resend.com/emails"
+                headers = {
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "CMDI-Canteen-System"
+                }
+                payload = {
+                    "from": "CMDI Canteen <onboarding@resend.dev>",
+                    "to": [ADMIN_EMAIL],
+                    "subject": subject,
+                    "html": html_content
+                }
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode('utf-8'),
+                    headers=headers,
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    print(f"[EMAIL RESEND SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} via HTTPS!")
+                    return
+            except Exception as e_resend:
+                print(f"[EMAIL RESEND ERROR]: {e_resend}")
 
-        # Subok 1: TLS Port 587
-        try:
-            with smtplib.SMTP('smtp.gmail.com', 587, timeout=12) as server:
-                server.starttls()
-                server.login(MAIL_USERNAME, clean_password)
-                server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via Port 587)")
-            return
-        except Exception as e1:
-            print(f"[EMAIL Port 587 fail, trying 465]: {e1}")
-
-        # Subok 2: SSL Port 465
-        try:
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
-                server.login(MAIL_USERNAME, clean_password)
-                server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL} (via Port 465)")
-        except Exception as e2:
-            print(f"[EMAIL Port 465 fail]: {e2}")
+        # Paraan 2: Fallback SMTP (kung sakaling may sariling SMTP)
+        if MAIL_USERNAME and MAIL_PASSWORD:
+            try:
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = subject
+                msg['From'] = f"CMDI Canteen <{MAIL_USERNAME}>"
+                msg['To'] = ADMIN_EMAIL
+                msg.attach(MIMEText(html_content, 'html'))
+                with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
+                    server.starttls()
+                    server.login(MAIL_USERNAME, MAIL_PASSWORD.replace(' ', ''))
+                    server.send_message(msg)
+                print(f"[EMAIL SMTP SUCCESS] Naipadala via SMTP!")
+            except Exception as e_smtp:
+                print(f"[EMAIL SMTP ERROR]: {e_smtp}")
 
     threading.Thread(target=_send, daemon=True).start()
 
@@ -150,67 +158,56 @@ def inject_user():
 # --- EMAIL DIAGNOSTIC TEST ROUTE ---
 @app.route('/test-email')
 def test_email():
-    clean_password = (MAIL_PASSWORD or '').replace(' ', '').strip()
-    user_txt = MAIL_USERNAME if MAIL_USERNAME else "HINDI NAKA-SET"
-    pass_txt = f"Naka-set ({len(clean_password)} characters)" if clean_password else "HINDI NAKA-SET"
+    resend_status = f"Naka-set ({RESEND_API_KEY[:6]}...)" if RESEND_API_KEY else "WALA PANG RESEND_API_KEY"
 
-    if not MAIL_USERNAME or not clean_password:
+    if not RESEND_API_KEY and not MAIL_PASSWORD:
         return f"""
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
-            <h3 style="color: red;">KULANG ANG EMAIL SETTINGS SA RENDER:</h3>
-            <p><strong>MAIL_USERNAME:</strong> {user_txt}</p>
-            <p><strong>MAIL_PASSWORD:</strong> {pass_txt}</p>
-            <p>Pumunta sa Render -> Environment at i-set ang dalawang ito.</p>
+            <h3 style="color: red;">KULANG ANG RESEND_API_KEY:</h3>
+            <p>1. Pumunta sa <a href="https://resend.com" target="_blank">resend.com</a> at kumuha ng libreng API Key (nagsisimula sa <code>re_...</code>).</p>
+            <p>2. Ilagay sa Render Environment bilang <code>RESEND_API_KEY</code>.</p>
         </div>
         """
 
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = "[TEST] CMDI Canteen Email Notification Test"
-    msg['From'] = f"CMDI Canteen <{MAIL_USERNAME}>"
-    msg['To'] = ADMIN_EMAIL
-    msg.attach(MIMEText("<h3>Matagumpay ang Email Test ng CMDI Canteen!</h3><p>Nakatanggap ka ng test notification. Gumagana na ang email para sa mga orders!</p>", 'html'))
+    # Subukan ang Resend HTTPS
+    if RESEND_API_KEY:
+        try:
+            url = "https://api.resend.com/emails"
+            headers = {
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+                "User-Agent": "CMDI-Canteen-System"
+            }
+            payload = {
+                "from": "CMDI Canteen <onboarding@resend.dev>",
+                "to": [ADMIN_EMAIL],
+                "subject": "[TEST] CMDI Canteen Email Notification Test",
+                "html": "<h3>Tagumpay ang Email Notification!</h3><p>Nakatanggap ka ng test email gamit ang Resend HTTPS Port 443. Lusot ito sa firewall ng Render!</p>"
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                res_body = resp.read().decode('utf-8')
+                return f"""
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px; background-color: #f0fff4;">
+                    <h3 style="color: green;">🎉 SUCCESS! Naipadala ang Email!</h3>
+                    <p>Matagumpay na naipadala ang email kay <strong>{ADMIN_EMAIL}</strong> sa pamamagitan ng HTTPS!</p>
+                    <p>Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.</p>
+                </div>
+                """
+        except Exception as e:
+            return f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
+                <h3 style="color: red;">ERROR SA RESEND:</h3>
+                <p>{e}</p>
+            </div>
+            """
 
-    errors = []
-
-    # Subok 1: TLS Port 587
-    try:
-        with smtplib.SMTP('smtp.gmail.com', 587, timeout=12) as server:
-            server.starttls()
-            server.login(MAIL_USERNAME, clean_password)
-            server.send_message(msg)
-        return f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px; background-color: #f0fff4;">
-            <h3 style="color: green;">SUCCESS! (Nagamit ang Port 587)</h3>
-            <p>Matagumpay na naipadala ang email kay <strong>{ADMIN_EMAIL}</strong>!</p>
-            <p>Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.</p>
-        </div>
-        """
-    except Exception as e587:
-        errors.append(f"Port 587: {e587}")
-
-    # Subok 2: SSL Port 465
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=context, timeout=12) as server:
-            server.login(MAIL_USERNAME, clean_password)
-            server.send_message(msg)
-        return f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid green; border-radius: 8px; background-color: #f0fff4;">
-            <h3 style="color: green;">SUCCESS! (Nagamit ang Port 465)</h3>
-            <p>Matagumpay na naipadala ang email kay <strong>{ADMIN_EMAIL}</strong>!</p>
-            <p>Pakitingnan ang iyong <strong>Inbox</strong> o <strong>Spam</strong> folder sa Gmail.</p>
-        </div>
-        """
-    except Exception as e465:
-        errors.append(f"Port 465: {e465}")
-
-    return f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; border: 2px solid red; border-radius: 8px;">
-        <h3 style="color: red;">ERROR SA PAGPADALA:</h3>
-        <p>{'<br>'.join(errors)}</p>
-        <p><em>Paalala:</em> Kailangan ay <strong>16-letter Google App Password</strong> mula sa <a href="https://myaccount.google.com/apppasswords" target="_blank">Google App Passwords</a>.</p>
-    </div>
-    """
+    return "<p>Pumunta sa resend.com para kumuha ng API Key.</p>"
 
 # --- ROUTES ---
 @app.route('/')
