@@ -40,9 +40,9 @@ MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com'
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin sa background para hindi mag-lag ang system"""
+    """Nagpapadala ng email sa admin sa background thread para mabilis ang checkout"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
-        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD sa Environment.")
+        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
         return
 
     def _send():
@@ -132,7 +132,6 @@ def inject_user():
     return dict(current_user=current_user(), now=datetime.utcnow())
 
 # --- ROUTES ---
-# Parehong 'index' at 'home' para sigurado at hindi mag-BuildError
 @app.route('/')
 @app.route('/index')
 def index():
@@ -273,7 +272,7 @@ def checkout():
     db.session.commit()
     session.pop('cart', None)
 
-    # --- EMAIL NOTIFICATION SA ADMIN ---
+    # --- EMAIL NOTIFICATION SA ADMIN GMAIL ---
     items_rows = "".join([
         f"<tr>"
         f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.name}</td>"
@@ -322,7 +321,7 @@ def checkout():
             </table>
         </div>
         <div style="background-color: #0d3b66; color: #ffffff; padding: 12px; text-align: center; font-size: 12px;">
-            CMDI Online Canteen Ordering & Reservation System &bull; {datetime.utcnow().year}
+            CMDI Online Canteen Ordering & Reservation System
         </div>
     </div>
     """
@@ -453,7 +452,7 @@ def admin_menu():
         item = MenuItem(name=name, category=category, price=price, description=description)
         db.session.add(item)
         db.session.commit()
-        flash("Matagumpay na naidagdag ang bagong ulam/pagkain!", "success")
+        flash("Matagumpay na naidagdag ang bagong pagkain!", "success")
         return redirect(url_for('admin_menu'))
     items = MenuItem.query.all()
     return render_template('admin_menu.html', items=items)
