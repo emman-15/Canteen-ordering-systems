@@ -1,209 +1,120 @@
 {% extends 'base.html' %}
-{% block title %}Admin Operations Dashboard - Canteen Hub{% endblock %}
+
+{% block title %}Admin Dashboard - CMDI Canteen{% endblock %}
 
 {% block content %}
-<div class="row align-items-center mb-4">
-  <div class="col-md-8">
-    <h2 class="fw-bold mb-1">📊 Admin Operations Dashboard</h2>
-    <p class="text-muted mb-0">Live monitoring for online orders, table reservations, kitchen workflow, and revenue.</p>
-  </div>
-  <div class="col-md-4 text-md-end mt-2 mt-md-0">
-    <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-2 fs-6">
-      <i class="bi bi-circle-fill text-success me-1" style="font-size: 0.6rem;"></i> Live System Connected
-    </span>
-  </div>
+<div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+    <div>
+        <h2 class="fw-bold mb-1" style="color: var(--cmdi-blue);"><i class="fa-solid fa-gauge me-2 text-warning"></i>Admin Dashboard</h2>
+        <p class="text-muted mb-0">CARD-MRI Development Institute, Inc. - Canteen Control Center</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('admin_menu') }}" class="btn btn-cmdi-orange rounded-pill">
+            <i class="fa-solid fa-plus me-1"></i> Add Menu Item
+        </a>
+        <a href="{{ url_for('admin_orders') }}" class="btn btn-cmdi-blue rounded-pill">
+            <i class="fa-solid fa-list-check me-1"></i> View Orders
+        </a>
+    </div>
 </div>
 
-<!-- 5 Key Metric Cards -->
-<div class="row g-3 mb-4">
-  <!-- Revenue -->
-  <div class="col-sm-6 col-lg">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="text-muted small fw-semibold text-uppercase">Revenue</span>
-          <div class="bg-success-subtle text-success rounded-circle p-2 d-inline-flex">
-            <i class="bi bi-cash-coin fs-5"></i>
-          </div>
+<!-- STAT CARDS -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card card-custom p-3 border-start border-4 border-primary">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <p class="text-muted small mb-1 fw-bold">TOTAL SALES</p>
+                    <h3 class="fw-bold mb-0" style="color: var(--cmdi-orange);">₱{{ '%.2f'|format(total_sales or 0) }}</h3>
+                </div>
+                <div class="bg-light p-3 rounded-circle text-primary">
+                    <i class="fa-solid fa-peso-sign fa-2x"></i>
+                </div>
+            </div>
         </div>
-        <h3 class="fw-bold mb-0 text-success">₱{{ '%.2f'|format(revenue) }}</h3>
-        <small class="text-muted">Total valid sales</small>
-      </div>
     </div>
-  </div>
 
-  <!-- Total Orders -->
-  <div class="col-sm-6 col-lg">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="text-muted small fw-semibold text-uppercase">Total Orders</span>
-          <div class="bg-primary-subtle text-primary rounded-circle p-2 d-inline-flex">
-            <i class="bi bi-box-seam fs-5"></i>
-          </div>
+    <div class="col-md-3">
+        <div class="card card-custom p-3 border-start border-4 border-warning">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <p class="text-muted small mb-1 fw-bold">PENDING ORDERS</p>
+                    <h3 class="fw-bold mb-0 text-warning">{{ pending_orders }}</h3>
+                </div>
+                <div class="bg-light p-3 rounded-circle text-warning">
+                    <i class="fa-solid fa-clock fa-2x"></i>
+                </div>
+            </div>
         </div>
-        <h3 class="fw-bold mb-0 text-primary">{{ total_orders }}</h3>
-        <small class="text-muted">Placed via online tray</small>
-      </div>
     </div>
-  </div>
 
-  <!-- Kitchen Queue -->
-  <div class="col-sm-6 col-lg">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="text-muted small fw-semibold text-uppercase">Kitchen Queue</span>
-          <div class="bg-warning-subtle text-warning rounded-circle p-2 d-inline-flex">
-            <i class="bi bi-fire fs-5"></i>
-          </div>
+    <div class="col-md-3">
+        <div class="card card-custom p-3 border-start border-4 border-success">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <p class="text-muted small mb-1 fw-bold">TOTAL ORDERS</p>
+                    <h3 class="fw-bold mb-0 text-success">{{ total_orders }}</h3>
+                </div>
+                <div class="bg-light p-3 rounded-circle text-success">
+                    <i class="fa-solid fa-receipt fa-2x"></i>
+                </div>
+            </div>
         </div>
-        <h3 class="fw-bold mb-0 text-warning">{{ pending_orders }}</h3>
-        <small class="text-muted">Pending / Cooking</small>
-      </div>
     </div>
-  </div>
 
-  <!-- Active Reservations -->
-  <div class="col-sm-6 col-lg">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="text-muted small fw-semibold text-uppercase">Reservations</span>
-          <div class="bg-info-subtle text-info rounded-circle p-2 d-inline-flex">
-            <i class="bi bi-calendar2-check fs-5"></i>
-          </div>
+    <div class="col-md-3">
+        <div class="card card-custom p-3 border-start border-4 border-info">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <p class="text-muted small mb-1 fw-bold">USERS REGISTERED</p>
+                    <h3 class="fw-bold mb-0 text-info">{{ total_users }}</h3>
+                </div>
+                <div class="bg-light p-3 rounded-circle text-info">
+                    <i class="fa-solid fa-users fa-2x"></i>
+                </div>
+            </div>
         </div>
-        <h3 class="fw-bold mb-0 text-info">{{ pending_reservations }}</h3>
-        <small class="text-muted">{{ total_reservations }} all-time booked</small>
-      </div>
     </div>
-  </div>
-
-  <!-- Students -->
-  <div class="col-sm-6 col-lg">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="text-muted small fw-semibold text-uppercase">Students</span>
-          <div class="bg-secondary-subtle text-secondary rounded-circle p-2 d-inline-flex">
-            <i class="bi bi-people fs-5"></i>
-          </div>
-        </div>
-        <h3 class="fw-bold mb-0 text-dark">{{ total_users }}</h3>
-        <small class="text-muted">Registered accounts</small>
-      </div>
-    </div>
-  </div>
 </div>
 
-<!-- Split Tables Section -->
-<div class="row g-4">
-  <!-- Recent Online Orders -->
-  <div class="col-lg-6">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-        <h5 class="mb-0 fw-bold"><i class="bi bi-receipt me-2 text-success"></i>Recent Online Orders</h5>
-        <a href="{{ url_for('admin_orders') }}" class="btn btn-outline-success btn-sm">View All Orders</a>
-      </div>
-      <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table table-hover align-middle mb-0">
-            <thead class="table-light small text-muted">
-              <tr>
-                <th class="ps-3">#</th>
-                <th>Student</th>
-                <th>Type</th>
-                <th>Total</th>
-                <th>Status</th>
-                <th class="pe-3 text-end">Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for o in recent_orders %}
-                <tr>
-                  <td class="ps-3 fw-bold">#{{ o.id }}</td>
-                  <td>
-                    <div>{{ o.user.name }}</div>
-                    <small class="text-muted">{{ o.items|length }} item(s)</small>
-                  </td>
-                  <td>
-                    <span class="badge {% if o.order_type == 'dine_in' %}bg-primary-subtle text-primary{% else %}bg-success-subtle text-success{% endif %}">
-                      {{ '🪑 Dine' if o.order_type == 'dine_in' else '🥡 Pick' }}
-                    </span>
-                  </td>
-                  <td class="fw-bold text-success">₱{{ '%.2f'|format(o.total) }}</td>
-                  <td>
-                    <span class="badge badge-status badge-{{ o.status }}">{{ o.status }}</span>
-                  </td>
-                  <td class="pe-3 text-end small text-muted">
-                    {{ o.created_at[11:16] }}
-                  </td>
-                </tr>
-              {% else %}
-                <tr>
-                  <td colspan="6" class="text-center py-4 text-muted">No orders recorded yet.</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
+<!-- RECENT ORDERS -->
+<div class="card card-custom p-4 shadow-sm">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="fw-bold mb-0" style="color: var(--cmdi-blue);">Kamakailang mga Order</h5>
+        <a href="{{ url_for('admin_orders') }}" class="btn btn-sm btn-outline-secondary">Lahat ng Orders &rarr;</a>
     </div>
-  </div>
 
-  <!-- Upcoming Table Reservations -->
-  <div class="col-lg-6">
-    <div class="card shadow-sm border-0 h-100">
-      <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-        <h5 class="mb-0 fw-bold"><i class="bi bi-calendar-event me-2 text-info"></i>Upcoming Table Reservations</h5>
-        <a href="{{ url_for('admin_reservations') }}" class="btn btn-outline-info btn-sm">Manage All</a>
-      </div>
-      <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table table-hover align-middle mb-0">
-            <thead class="table-light small text-muted">
-              <tr>
-                <th class="ps-3">#</th>
-                <th>Guest</th>
-                <th>Date &amp; Time</th>
-                <th>Party</th>
-                <th>Area</th>
-                <th class="pe-3 text-end">Status</th>
-              </tr>
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <thead>
+                <tr class="text-muted small">
+                    <th>Order ID</th>
+                    <th>Customer</th>
+                    <th>Type</th>
+                    <th>Halaga</th>
+                    <th>Bayad</th>
+                    <th>Status</th>
+                    <th>Oras</th>
+                </tr>
             </thead>
             <tbody>
-              {% for r in upcoming_reservations %}
+                {% for o in recent_orders %}
                 <tr>
-                  <td class="ps-3 fw-bold">#{{ r.id }}</td>
-                  <td>
-                    <div>{{ r.customer_name }}</div>
-                    <small class="text-muted">{{ r.customer_phone }}</small>
-                  </td>
-                  <td>
-                    <div class="fw-semibold">{{ r.reservation_date }}</div>
-                    <small class="text-muted">{{ r.reservation_time }}</small>
-                  </td>
-                  <td>
-                    <span class="badge bg-light text-dark border">
-                      <i class="bi bi-people me-1"></i>{{ r.party_size }}
-                    </span>
-                  </td>
-                  <td class="small">{{ r.table_preference }}</td>
-                  <td class="pe-3 text-end">
-                    <span class="badge badge-status badge-{{ r.status }}">{{ r.status }}</span>
-                  </td>
+                    <td class="fw-bold">#{{ o.id }}</td>
+                    <td>{{ o.user.name or o.user.username }}</td>
+                    <td><span class="badge bg-light text-dark border">{{ o.order_type|upper }}</span></td>
+                    <td class="fw-bold" style="color: var(--cmdi-orange);">₱{{ '%.2f'|format(o.total_amount) }}</td>
+                    <td><span class="badge {% if o.payment_status == 'paid' %}bg-success{% else %}bg-warning text-dark{% endif %}">{{ o.payment_status }}</span></td>
+                    <td><span class="badge bg-primary">{{ o.status }}</span></td>
+                    <td class="small text-muted">{{ o.created_at.strftime('%b %d, %I:%M %p') }}</td>
                 </tr>
-              {% else %}
+                {% else %}
                 <tr>
-                  <td colspan="6" class="text-center py-4 text-muted">No reservations booked yet.</td>
+                    <td colspan="7" class="text-center text-muted py-4">Wala pang natatanggap na order.</td>
                 </tr>
-              {% endfor %}
+                {% endfor %}
             </tbody>
-          </table>
-        </div>
-      </div>
+        </table>
     </div>
-  </div>
 </div>
 {% endblock %}
