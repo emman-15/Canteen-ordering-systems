@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from functools import wraps
 
+import jinja2
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -11,19 +12,38 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_from_directory,
     session,
     url_for,
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# Load environment variables from .env if present
 load_dotenv()
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'canteen-super-secret-key-change-in-production')
+# ---------------------------------------------------------------------------
+# FLASK CONFIGURATION & DUAL TEMPLATE / STATIC RESOLUTION
+# Supports both:
+# 1. Normal subfolder structure: templates/ and static/
+# 2. Flat GitHub root structure where HTML and CSS are at root level
+# ---------------------------------------------------------------------------
+app = Flask(
+    __name__,
+    template_folder='templates' if os.path.isdir(os.path.join(BASE_DIR, 'templates')) else '.',
+    static_folder='static' if os.path.isdir(os.path.join(BASE_DIR, 'static')) else '.'
+)
+
+# Robust template loader: checks both templates/ folder AND root directory
+loaders = []
+templates_path = os.path.join(BASE_DIR, 'templates')
+if os.path.isdir(templates_path):
+    loaders.append(jinja2.FileSystemLoader(templates_path))
+loaders.append(jinja2.FileSystemLoader(BASE_DIR))
+app.jinja_loader = jinja2.ChoiceLoader(loaders)
+
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'canteen-super-secret-key-prod-2026')
 
 # ---------------------------------------------------------------------------
 # DATABASE CONFIGURATION: NEON POSTGRESQL + LOCAL SQLITE FALLBACK
@@ -31,7 +51,7 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'canteen-super-secret-ke
 raw_db_url = os.environ.get('DATABASE_URL', '').strip()
 
 if raw_db_url:
-    # Render and Heroku often provide postgres:// which SQLAlchemy 2.0+ requires as postgresql://
+    # Render and Heroku provide postgres:// which SQLAlchemy requires as postgresql://
     if raw_db_url.startswith('postgres://'):
         raw_db_url = raw_db_url.replace('postgres://', 'postgresql://', 1)
 
@@ -43,18 +63,28 @@ if raw_db_url:
     app.config['SQLALCHEMY_DATABASE_URI'] = raw_db_url
     app.config['DB_TYPE'] = 'Neon PostgreSQL'
 else:
-    # Fallback to local SQLite for seamless offline/local development
     db_path = os.path.join(BASE_DIR, 'canteen.db')
     app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
     app.config['DB_TYPE'] = 'Local SQLite'
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,   # Automatically test connections; reconnects smoothly if Neon auto-suspends
-    'pool_recycle': 300,      # Recycle connections every 5 minutes
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
 }
 
 db = SQLAlchemy(app)
+
+# ---------------------------------------------------------------------------
+# FALLBACK STATIC FILE SERVING FOR FLAT GITHUB REPOSITORY
+# ---------------------------------------------------------------------------
+@app.route('/style.css')
+@app.route('/static/style.css')
+def serve_css():
+    static_css = os.path.join(BASE_DIR, 'static', 'style.css')
+    if os.path.exists(static_css):
+        return send_from_directory(os.path.join(BASE_DIR, 'static'), 'style.css')
+    return send_from_directory(BASE_DIR, 'style.css')
 
 # ---------------------------------------------------------------------------
 # DATABASE MODELS
@@ -67,7 +97,7 @@ class User(db.Model):
     name = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
-    role = db.Column(db.String(20), nullable=False, default='user')  # 'admin' or 'user'
+    role = db.Column(db.String(20), nullable=False, default='user')
     wallet_balance = db.Column(db.Float, nullable=False, default=0.0)
     phone = db.Column(db.String(50), nullable=True, default='')
     created_at = db.Column(db.String(50), nullable=False, default=lambda: datetime.utcnow().isoformat())
@@ -97,12 +127,12 @@ class Reservation(db.Model):
     customer_name = db.Column(db.String(120), nullable=False)
     customer_phone = db.Column(db.String(50), nullable=False)
     customer_email = db.Column(db.String(120), nullable=False)
-    reservation_date = db.Column(db.String(30), nullable=False)  # YYYY-MM-DD
-    reservation_time = db.Column(db.String(30), nullable=False)  # e.g. 12:30 PM
+    reservation_date = db.Column(db.String(30), nullable=False)
+    reservation_time = db.Column(db.String(30), nullable=False)
     party_size = db.Column(db.Integer, nullable=False, default=2)
     table_preference = db.Column(db.String(60), default='Main Dining Hall')
     special_notes = db.Column(db.Text, default='')
-    status = db.Column(db.String(30), default='pending')  # pending, confirmed, seated, completed, cancelled
+    status = db.Column(db.String(30), default='pending')
     created_at = db.Column(db.String(50), default=lambda: datetime.utcnow().isoformat())
 
     orders = db.relationship('Order', backref='reservation', lazy=True)
@@ -114,11 +144,11 @@ class Order(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     reservation_id = db.Column(db.Integer, db.ForeignKey('reservation.id'), nullable=True)
-    order_type = db.Column(db.String(30), default='pickup')  # pickup, dine_in
+    order_type = db.Column(db.String(30), default='pickup')
     total = db.Column(db.Float, nullable=False, default=0.0)
-    payment_method = db.Column(db.String(30), default='wallet')  # wallet, gcash, maya, cash
-    payment_status = db.Column(db.String(30), default='paid')    # paid, pending, refunded
-    status = db.Column(db.String(30), default='pending')        # pending, preparing, ready, completed, cancelled
+    payment_method = db.Column(db.String(30), default='wallet')
+    payment_status = db.Column(db.String(30), default='paid')
+    status = db.Column(db.String(30), default='pending')
     pickup_time = db.Column(db.String(60), default='ASAP')
     special_instructions = db.Column(db.Text, default='')
     created_at = db.Column(db.String(50), default=lambda: datetime.utcnow().isoformat())
@@ -138,59 +168,12 @@ class OrderItem(db.Model):
 
 
 # ---------------------------------------------------------------------------
-# DATABASE INITIALIZATION, SEEDING & MIGRATION
+# INITIALIZATION & SEEDING
 # ---------------------------------------------------------------------------
 
-def ensure_sqlite_columns():
-    """Ensure any new columns exist in local SQLite if migrating from previous schema."""
-    if not str(db.engine.url).startswith('sqlite'):
-        return
-
-    with db.engine.connect() as conn:
-        # Check user table
-        try:
-            user_cols = [row[1] for row in conn.execute(db.text("PRAGMA table_info(user)")).fetchall()]
-            if 'phone' not in user_cols:
-                conn.execute(db.text("ALTER TABLE user ADD COLUMN phone TEXT DEFAULT ''"))
-                conn.commit()
-        except Exception:
-            pass
-
-        # Check order table
-        try:
-            order_cols = [row[1] for row in conn.execute(db.text("PRAGMA table_info(\"order\")")).fetchall()]
-            if 'reservation_id' not in order_cols:
-                conn.execute(db.text("ALTER TABLE \"order\" ADD COLUMN reservation_id INTEGER"))
-            if 'order_type' not in order_cols:
-                conn.execute(db.text("ALTER TABLE \"order\" ADD COLUMN order_type TEXT DEFAULT 'pickup'"))
-            if 'payment_method' not in order_cols:
-                conn.execute(db.text("ALTER TABLE \"order\" ADD COLUMN payment_method TEXT DEFAULT 'wallet'"))
-            if 'payment_status' not in order_cols:
-                conn.execute(db.text("ALTER TABLE \"order\" ADD COLUMN payment_status TEXT DEFAULT 'paid'"))
-            if 'special_instructions' not in order_cols:
-                conn.execute(db.text("ALTER TABLE \"order\" ADD COLUMN special_instructions TEXT DEFAULT ''"))
-            conn.commit()
-        except Exception:
-            pass
-
-        # Check menu_item table
-        try:
-            menu_cols = [row[1] for row in conn.execute(db.text("PRAGMA table_info(menu_item)")).fetchall()]
-            if 'image_url' not in menu_cols:
-                conn.execute(db.text("ALTER TABLE menu_item ADD COLUMN image_url TEXT DEFAULT ''"))
-            if 'prep_time' not in menu_cols:
-                conn.execute(db.text("ALTER TABLE menu_item ADD COLUMN prep_time TEXT DEFAULT '15 mins'"))
-            conn.commit()
-        except Exception:
-            pass
-
-
 def init_db():
-    """Creates tables and seeds default demo data for Neon / SQLite."""
     db.create_all()
-    ensure_sqlite_columns()
 
-    # Seed Admin account
     admin = User.query.filter_by(email='admin@canteen.com').first()
     if not admin:
         admin = User(
@@ -204,7 +187,6 @@ def init_db():
         )
         db.session.add(admin)
 
-    # Seed Demo Student account
     student = User.query.filter_by(email='student@canteen.com').first()
     if not student:
         student = User(
@@ -218,47 +200,42 @@ def init_db():
         )
         db.session.add(student)
 
-    # Seed Menu Items if empty
     if MenuItem.query.count() == 0:
         sample_items = [
-            # Meals
             ('Chicken Adobo Rice Bowl', 'Savory tender chicken braised in garlic, soy sauce, vinegar, with hot steamed rice.', 65.0, 'Meals', '🍗', '15 mins'),
             ('Sizzling Pork Sisig with Rice', 'Crispy, seasoned minced pork with onions, calamansi, egg, and steamed rice.', 75.0, 'Meals', '🍳', '15 mins'),
             ('Beef Caldereta Rice Bowl', 'Hearty beef stew in rich tomato gravy with bell peppers and potatoes.', 85.0, 'Meals', '🍲', '20 mins'),
             ('Crispy Lechon Kawali', 'Golden deep-fried pork belly with signature spiced liver dipping sauce and rice.', 90.0, 'Meals', '🥓', '15 mins'),
             ('Sinigang na Baboy Soup', 'Pork ribs in sour tamarind broth with kangkong, radish, and tomato.', 80.0, 'Meals', '🥣', '20 mins'),
-
-            # Snacks
             ('Crispy Veggie Lumpia (5pcs)', 'Golden-fried vegetable spring rolls served with homemade sweet chili dip.', 40.0, 'Snacks', '🥟', '10 mins'),
             ('Filipino Sweet Spaghetti', 'Classic sweet tomato sauce with savory hotdog slices and grated melted cheese.', 45.0, 'Snacks', '🍝', '10 mins'),
             ('Cheesy Burger with Fries', 'Juicy beef patty with melted cheddar, lettuce, and crispy golden potato fries.', 60.0, 'Snacks', '🍔', '12 mins'),
             ('Clubhouse Sandwich', 'Triple-decker sandwich with ham, egg, cheese, and crunchy vegetable slaw.', 50.0, 'Snacks', '🥪', '10 mins'),
-
-            # Drinks
             ('Signature House Iced Tea (16oz)', 'Refreshing freshly brewed black tea with calamansi and honey.', 20.0, 'Drinks', '🍹', '5 mins'),
             ('Fresh Calamansi Juice (16oz)', 'Natural vitamin C packed citrus cooler served chilled.', 25.0, 'Drinks', '🍋', '5 mins'),
             ('Iced Caramel Macchiato', 'Cold espresso layered with fresh milk and sweet caramel drizzle.', 45.0, 'Drinks', '☕', '5 mins'),
             ('Bottled Spring Water (500ml)', 'Purified and chilled drinking water.', 15.0, 'Drinks', '💧', '2 mins'),
-
-            # Desserts
-            ('Special Halo-Halo Supreme', 'Shaved ice with ube halaya, leche flan, nata de coco, pinipig, and evaporated milk.', 55.0, 'Desserts', '🍨', '8 mins'),
+            ('Special Halo-Halo Supreme', 'Shaved ice with ube halaya, leche flan, nata de coco, pinipig, and milk.', 55.0, 'Desserts', '🍨', '8 mins'),
             ('Creamy Leche Flan Slice', 'Silky smooth baked caramel custard dessert slice.', 35.0, 'Desserts', '🍮', '5 mins'),
             ('Crispy Banana Turon (3pcs)', 'Sweet banana and jackfruit wrapped and glazed in melted brown sugar.', 25.0, 'Desserts', '🍌', '5 mins'),
         ]
-
         for name, desc, price, cat, icon, prep in sample_items:
-            db.session.add(MenuItem(
-                name=name,
-                description=desc,
-                price=price,
-                category=cat,
-                available=True,
-                image_url=icon,
-                prep_time=prep
-            ))
+            db.session.add(MenuItem(name=name, description=desc, price=price, category=cat, available=True, image_url=icon, prep_time=prep))
 
     db.session.commit()
 
+# Ensure database is initialized
+with app.app_context():
+    try:
+        init_db()
+    except Exception as e:
+        print(f"DB Init notice: {e}")
+
+# Error handler for 500 to show readable errors if any
+@app.errorhandler(500)
+def handle_500_error(e):
+    import traceback
+    return f"<div style='font-family:sans-serif;padding:24px;'><h3 style='color:#dc3545;'>Application Notice (500)</h3><pre style='background:#f8f9fa;padding:16px;border:1px solid #dee2e6;border-radius:8px;overflow-x:auto;'>{traceback.format_exc()}</pre></div>", 500
 
 # ---------------------------------------------------------------------------
 # AUTHENTICATION & ACCESS DECORATORS
@@ -292,7 +269,7 @@ def current_user():
 
 
 def get_cart():
-    return session.get('cart', {})  # {menu_item_id(str): qty(int)}
+    return session.get('cart', {})
 
 
 def save_cart(cart):
@@ -345,7 +322,7 @@ def register():
             email=email,
             password_hash=generate_password_hash(password),
             role='user',
-            wallet_balance=100.0,  # Bonus ₱100 welcome balance
+            wallet_balance=100.0,
             phone=phone,
             created_at=datetime.utcnow().isoformat()
         )
@@ -404,8 +381,6 @@ def menu():
         query = query.filter(MenuItem.name.ilike(f'%{search_query}%'))
 
     items = query.order_by(MenuItem.category, MenuItem.name).all()
-
-    # Get all distinct categories
     all_categories = [c[0] for c in db.session.query(MenuItem.category).distinct().order_by(MenuItem.category).all()]
 
     return render_template(
@@ -450,7 +425,6 @@ def cart():
         total += subtotal
         line_items.append({'item': item, 'qty': qty, 'subtotal': subtotal})
 
-    # Get user's active/confirmed reservations to allow linking dine-in pre-orders
     active_reservations = Reservation.query.filter(
         Reservation.user_id == user.id,
         Reservation.status.in_(['pending', 'confirmed'])
@@ -502,15 +476,14 @@ def checkout():
         flash('Your cart is empty. Please choose some delicious items from our menu.', 'warning')
         return redirect(url_for('menu'))
 
-    order_type = request.form.get('order_type', 'pickup')  # pickup or dine_in
+    order_type = request.form.get('order_type', 'pickup')
     pickup_time = request.form.get('pickup_time', 'ASAP').strip() or 'ASAP'
-    payment_method = request.form.get('payment_method', 'wallet')  # wallet, gcash, maya, cash
+    payment_method = request.form.get('payment_method', 'wallet')
     special_instructions = request.form.get('special_instructions', '').strip()
     reservation_id_raw = request.form.get('reservation_id')
 
     reservation_id = int(reservation_id_raw) if reservation_id_raw and reservation_id_raw.isdigit() else None
 
-    # Calculate order total
     total = 0.0
     order_items_to_create = []
 
@@ -527,7 +500,6 @@ def checkout():
         save_cart({})
         return redirect(url_for('menu'))
 
-    # Payment processing
     payment_status = 'paid'
     if payment_method == 'wallet':
         if user.wallet_balance < total:
@@ -536,12 +508,10 @@ def checkout():
             return redirect(url_for('wallet'))
         user.wallet_balance -= total
     elif payment_method in ('gcash', 'maya'):
-        # Simulated e-wallet instant payment
         payment_status = 'paid'
     elif payment_method == 'cash':
         payment_status = 'pending'
 
-    # Create Order
     new_order = Order(
         user_id=user.id,
         reservation_id=reservation_id,
@@ -555,7 +525,7 @@ def checkout():
         created_at=datetime.utcnow().isoformat()
     )
     db.session.add(new_order)
-    db.session.flush()  # Populates new_order.id
+    db.session.flush()
 
     for m_id, name, price, qty in order_items_to_create:
         db.session.add(OrderItem(
@@ -602,7 +572,6 @@ def cancel_order(order_id):
         flash('Only pending orders can be cancelled. Your food is already being prepared!', 'warning')
         return redirect(url_for('orders'))
 
-    # Refund wallet if paid via wallet
     if order.payment_method == 'wallet' and order.payment_status == 'paid':
         user.wallet_balance += order.total
         order.payment_status = 'refunded'
@@ -730,7 +699,6 @@ def admin_dashboard():
     total_reservations = Reservation.query.count()
     pending_reservations = Reservation.query.filter(Reservation.status.in_(['pending', 'confirmed'])).count()
 
-    # Revenue from completed / active orders
     revenue_res = db.session.query(db.func.coalesce(db.func.sum(Order.total), 0.0))\
         .filter(Order.status != 'cancelled').scalar()
     revenue = float(revenue_res or 0.0)
@@ -785,7 +753,6 @@ def admin_order_status(order_id):
 
     valid_statuses = ('pending', 'preparing', 'ready', 'completed', 'cancelled')
     if order and new_status in valid_statuses:
-        # If cancelled, auto-refund wallet if wallet payment was used
         if new_status == 'cancelled' and order.status != 'cancelled':
             if order.payment_method == 'wallet' and order.payment_status == 'paid':
                 order.user.wallet_balance += order.total
@@ -934,16 +901,6 @@ def admin_user_topup(user_id):
 
     return redirect(url_for('admin_users'))
 
-
-# ---------------------------------------------------------------------------
-# APPLICATION ENTRYPOINT & DATABASE AUTO-INITIALIZE
-# ---------------------------------------------------------------------------
-
-with app.app_context():
-    try:
-        init_db()
-    except Exception as e:
-        print(f"Warning during DB init: {e}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
