@@ -12,7 +12,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__, template_folder='.')
 app.secret_key = os.environ.get('SECRET_KEY', 'cmdi_canteen_super_secret_key_2026')
 
-# Suportahan ang parehong root folder at templates/ folder
+# Suportahan ang root folder at templates folder
 app.jinja_loader = ChoiceLoader([
     FileSystemLoader('.'),
     FileSystemLoader('templates')
@@ -34,15 +34,15 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
-# Email Settings
+# Email Settings para kay Admin
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'emmanuelbarbadillo05@gmail.com')
 MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com')
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin gamit ang background thread para hindi mag-lag ang user"""
+    """Nagpapadala ng email sa admin sa background para hindi mag-lag ang system"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
-        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set sa Environment.")
+        print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD sa Environment.")
         return
 
     def _send():
@@ -58,7 +58,7 @@ def send_admin_email_async(subject, html_content):
                 server.starttls()
                 server.login(MAIL_USERNAME, clean_password)
                 server.send_message(msg)
-            print(f"[EMAIL SUCCESS] Naipadala ang email kay {ADMIN_EMAIL}")
+            print(f"[EMAIL SUCCESS] Naipadala ang order email kay {ADMIN_EMAIL}")
         except Exception as e:
             print(f"[EMAIL ERROR] Hindi naipadala ang email: {e}")
 
@@ -70,7 +70,7 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(20), default='student') # student, faculty, admin
+    role = db.Column(db.String(20), default='student')
     name = db.Column(db.String(120), nullable=True)
     wallet_balance = db.Column(db.Float, default=500.0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -79,7 +79,7 @@ class MenuItem(db.Model):
     __tablename__ = 'menu_items'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    category = db.Column(db.String(50), nullable=False) # Meals, Snacks, Drinks, Desserts
+    category = db.Column(db.String(50), nullable=False)
     price = db.Column(db.Float, nullable=False)
     description = db.Column(db.String(255))
     is_available = db.Column(db.Boolean, default=True)
@@ -93,7 +93,7 @@ class Reservation(db.Model):
     reservation_date = db.Column(db.Date, nullable=False)
     reservation_time = db.Column(db.Time, nullable=False)
     guests = db.Column(db.Integer, default=1)
-    status = db.Column(db.String(20), default='confirmed') # confirmed, cancelled, completed
+    status = db.Column(db.String(20), default='confirmed')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref=db.backref('reservations', lazy=True))
 
@@ -101,12 +101,12 @@ class Order(db.Model):
     __tablename__ = 'orders'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    order_type = db.Column(db.String(20), nullable=False) # 'dine-in' or 'takeout'
+    order_type = db.Column(db.String(20), nullable=False)
     reservation_id = db.Column(db.Integer, db.ForeignKey('reservations.id'), nullable=True)
     total_amount = db.Column(db.Float, nullable=False)
-    payment_method = db.Column(db.String(20), default='wallet') # wallet, cash_on_pickup
+    payment_method = db.Column(db.String(20), default='wallet')
     payment_status = db.Column(db.String(20), default='paid')
-    status = db.Column(db.String(20), default='pending') # pending, preparing, ready, completed, cancelled
+    status = db.Column(db.String(20), default='pending')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', backref=db.backref('orders', lazy=True))
     reservation = db.relationship('Reservation', backref=db.backref('linked_orders', lazy=True))
@@ -132,14 +132,20 @@ def inject_user():
     return dict(current_user=current_user(), now=datetime.utcnow())
 
 # --- ROUTES ---
+# Parehong 'index' at 'home' para sigurado at hindi mag-BuildError
 @app.route('/')
-def home():
+@app.route('/index')
+def index():
     user = current_user()
     if not user:
         return redirect(url_for('login'))
     if user.role == 'admin':
         return redirect(url_for('admin_dashboard'))
     return redirect(url_for('menu'))
+
+@app.route('/home')
+def home():
+    return index()
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -230,7 +236,6 @@ def checkout():
     payment_method = request.form.get('payment_method', 'wallet')
     reservation_id = request.form.get('reservation_id')
 
-    # Kwentahin ang kabuuang halaga
     total_amount = 0.0
     order_items_to_create = []
     for item_id, qty in cart_data.items():
@@ -268,7 +273,7 @@ def checkout():
     db.session.commit()
     session.pop('cart', None)
 
-    # --- AUTOMATIC EMAIL NOTIFICATION SA GMAIL NG ADMIN ---
+    # --- EMAIL NOTIFICATION SA ADMIN ---
     items_rows = "".join([
         f"<tr>"
         f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.name}</td>"
@@ -315,13 +320,6 @@ def checkout():
                     </tr>
                 </tfoot>
             </table>
-
-            <div style="text-align: center; margin-top: 30px;">
-                <a href="https://canteen-ordering-systems-1.onrender.com/admin/orders" 
-                   style="background-color: #ff7200; color: #ffffff; padding: 12px 26px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
-                   Buksan ang Admin Dashboard
-                </a>
-            </div>
         </div>
         <div style="background-color: #0d3b66; color: #ffffff; padding: 12px; text-align: center; font-size: 12px;">
             CMDI Online Canteen Ordering & Reservation System &bull; {datetime.utcnow().year}
@@ -334,16 +332,21 @@ def checkout():
         email_html
     )
 
-    flash(f"Salamat! Matagumpay ang iyong order (#{new_order.id}). Naabisuhan na ang Canteen Admin.", "success")
-    return redirect(url_for('my_orders'))
+    flash(f"Salamat! Matagumpay ang iyong order (#{new_order.id}).", "success")
+    return redirect(url_for('orders'))
 
+# Parehong 'orders' at 'my_orders' para walang build error
 @app.route('/orders')
-def my_orders():
+def orders():
     user = current_user()
     if not user:
         return redirect(url_for('login'))
-    orders = Order.query.filter_by(user_id=user.id).order_by(Order.created_at.desc()).all()
-    return render_template('orders.html', orders=orders)
+    user_orders = Order.query.filter_by(user_id=user.id).order_by(Order.created_at.desc()).all()
+    return render_template('orders.html', orders=user_orders)
+
+@app.route('/my_orders')
+def my_orders():
+    return orders()
 
 @app.route('/reservations', methods=['GET', 'POST'])
 def reservations():
@@ -474,7 +477,6 @@ def admin_users():
 # Database Table Creation at Initial Data
 with app.app_context():
     db.create_all()
-    # Lumikha ng default admin kung wala pa
     if not User.query.filter_by(username='admin').first():
         admin = User(
             username='admin',
@@ -484,7 +486,6 @@ with app.app_context():
         )
         db.session.add(admin)
 
-    # Lumikha ng default student kung wala pa
     if not User.query.filter_by(username='student').first():
         student = User(
             username='student',
@@ -495,7 +496,6 @@ with app.app_context():
         )
         db.session.add(student)
 
-    # Initial Menu Items kung bakante ang listahan
     if MenuItem.query.count() == 0:
         sample_menu = [
             MenuItem(name="Chicken Adobo with Rice", category="Meals", price=65.0, description="Classic Pinoy adobo with steaming hot rice"),
