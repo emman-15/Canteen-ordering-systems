@@ -40,7 +40,7 @@ MAIL_USERNAME = os.environ.get('MAIL_USERNAME', 'emmanuelbarbadillo05@gmail.com'
 MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '')
 
 def send_admin_email_async(subject, html_content):
-    """Nagpapadala ng email sa admin sa background thread para mabilis ang checkout"""
+    """Nagpapadala ng email sa admin sa background thread"""
     if not MAIL_USERNAME or not MAIL_PASSWORD:
         print("[EMAIL SKIP] Walang MAIL_USERNAME o MAIL_PASSWORD na naka-set.")
         return
@@ -165,6 +165,41 @@ def login():
 
     return render_template('login.html')
 
+# ROUTE PARA SA REGISTRATION (Inaayos ang BuildError)
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        name = request.form.get('name', '').strip()
+        
+        if not username or not password:
+            flash("Pakilagay ang username at password.", "danger")
+            return redirect(url_for('register'))
+            
+        if User.query.filter_by(username=username).first():
+            flash("May gumagamit na ng username na ito. Pumili ng iba.", "warning")
+            return redirect(url_for('register'))
+            
+        # Lumikha ng bagong student na may Free ₱100 Balance
+        new_student = User(
+            username=username,
+            password=generate_password_hash(password),
+            role='student',
+            name=name or username,
+            wallet_balance=100.0
+        )
+        db.session.add(new_student)
+        db.session.commit()
+        
+        flash("Matagumpay ang pag-rehistro! May libre kang ₱100 balance. Mag-sign in na.", "success")
+        return redirect(url_for('login'))
+        
+    try:
+        return render_template('register.html')
+    except Exception:
+        return render_template('login.html')
+
 @app.route('/logout')
 def logout():
     session.clear()
@@ -272,7 +307,7 @@ def checkout():
     db.session.commit()
     session.pop('cart', None)
 
-    # --- EMAIL NOTIFICATION SA ADMIN GMAIL ---
+    # Email notification kay admin
     items_rows = "".join([
         f"<tr>"
         f"<td style='padding:10px;border-bottom:1px solid #eee;'>{item.name}</td>"
@@ -334,7 +369,6 @@ def checkout():
     flash(f"Salamat! Matagumpay ang iyong order (#{new_order.id}).", "success")
     return redirect(url_for('orders'))
 
-# Parehong 'orders' at 'my_orders' para walang build error
 @app.route('/orders')
 def orders():
     user = current_user()
