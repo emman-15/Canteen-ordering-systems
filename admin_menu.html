@@ -1,135 +1,69 @@
 {% extends 'base.html' %}
-{% block title %}Manage Menu - Canteen Hub Admin{% endblock %}
+
+{% block title %}Manage Menu - Admin{% endblock %}
 
 {% block content %}
-<div class="row align-items-center mb-4">
-  <div class="col-md-8">
-    <h2 class="fw-bold mb-1">🛠️ Manage Food Menu</h2>
-    <p class="text-muted mb-0">Add new canteen dishes, adjust prices, edit descriptions, and toggle item availability.</p>
-  </div>
-</div>
-
-<!-- Add New Dish Form Card -->
-<div class="card shadow-sm border-0 mb-4">
-  <div class="card-header bg-success text-white py-3">
-    <h5 class="mb-0 fw-bold"><i class="bi bi-plus-circle me-2"></i>Add New Dish to Menu</h5>
-  </div>
-  <div class="card-body p-4">
-    <form method="POST" action="{{ url_for('admin_menu_add') }}">
-      <div class="row g-3">
-        <div class="col-md-4">
-          <label class="form-label fw-semibold">Dish Name</label>
-          <input type="text" name="name" class="form-control" placeholder="e.g. Pork Adobo Rice Bowl" required>
-        </div>
-
-        <div class="col-md-4">
-          <label class="form-label fw-semibold">Category</label>
-          <input type="text" name="category" list="categoryOptions" class="form-control" placeholder="Meals, Snacks, Drinks, Desserts..." required>
-          <datalist id="categoryOptions">
-            {% for c in categories %}
-              <option value="{{ c }}">
-            {% endfor %}
-            <option value="Meals">
-            <option value="Snacks">
-            <option value="Drinks">
-            <option value="Desserts">
-          </datalist>
-        </div>
-
-        <div class="col-md-2">
-          <label class="form-label fw-semibold">Price (₱)</label>
-          <input type="number" step="0.01" min="1" name="price" class="form-control" placeholder="65.00" required>
-        </div>
-
-        <div class="col-md-2">
-          <label class="form-label fw-semibold">Icon / Emoji</label>
-          <input type="text" name="image_url" class="form-control" placeholder="🍗, 🍳, 🍹, 🍨">
-        </div>
-
-        <div class="col-md-9">
-          <label class="form-label fw-semibold">Description</label>
-          <input type="text" name="description" class="form-control" placeholder="Tender chicken braised with soy sauce, garlic, vinegar...">
-        </div>
-
-        <div class="col-md-3">
-          <label class="form-label fw-semibold">Estimated Prep Time</label>
-          <input type="text" name="prep_time" class="form-control" placeholder="15 mins" value="15 mins">
-        </div>
-
-        <div class="col-12 text-end">
-          <button type="submit" class="btn btn-success px-4 py-2 fw-semibold">
-            <i class="bi bi-check2 me-1"></i> Add Dish to Menu
-          </button>
-        </div>
-      </div>
-    </form>
-  </div>
-</div>
-
-<!-- Current Menu Table -->
-<div class="card shadow-sm border-0">
-  <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-    <h5 class="mb-0 fw-bold"><i class="bi bi-list-stars text-success me-2"></i>Active Menu Items ({{ items|length }})</h5>
-  </div>
-  <div class="card-body p-0">
-    <div class="table-responsive">
-      <table class="table table-hover align-middle mb-0">
-        <thead class="table-light">
-          <tr>
-            <th class="ps-3" style="width: 50px;">Icon</th>
-            <th>Dish Name &amp; Description</th>
-            <th>Category</th>
-            <th>Price</th>
-            <th>Prep Time</th>
-            <th>Status</th>
-            <th class="pe-3 text-end">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in items %}
-            <tr>
-              <td class="ps-3 text-center fs-4">
-                {{ item.image_url if item.image_url else '🍲' }}
-              </td>
-              <td>
-                <div class="fw-bold">{{ item.name }}</div>
-                <small class="text-muted">{{ item.description }}</small>
-              </td>
-              <td>
-                <span class="badge bg-secondary-subtle text-secondary border">{{ item.category }}</span>
-              </td>
-              <td class="fw-bold text-success fs-6">₱{{ '%.2f'|format(item.price) }}</td>
-              <td class="small text-muted">{{ item.prep_time or '15 mins' }}</td>
-              <td>
-                {% if item.available %}
-                  <span class="badge bg-success-subtle text-success border border-success-subtle">Available</span>
-                {% else %}
-                  <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">Hidden</span>
-                {% endif %}
-              </td>
-              <td class="pe-3 text-end">
-                <div class="d-inline-flex gap-2">
-                  <form method="POST" action="{{ url_for('admin_menu_toggle', item_id=item.id) }}">
-                    <button type="submit" class="btn btn-sm {% if item.available %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
-                      {{ 'Hide' if item.available else 'Show' }}
-                    </button>
-                  </form>
-                  <form method="POST" action="{{ url_for('admin_menu_delete', item_id=item.id) }}" onsubmit="return confirm('Delete this menu item completely?');">
-                    <button type="submit" class="btn btn-sm btn-outline-danger">
-                      <i class="bi bi-trash3"></i>
-                    </button>
-                  </form>
+<div class="row g-4">
+    <div class="col-lg-4">
+        <div class="card card-custom p-4 shadow-sm">
+            <h4 class="fw-bold mb-3" style="color: var(--cmdi-blue);"><i class="fa-solid fa-plus me-2 text-warning"></i>Magdagdag ng Pagkain</h4>
+            <form method="POST" action="{{ url_for('admin_menu') }}">
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Pangalan ng Ulam / Inumin:</label>
+                    <input type="text" name="name" class="form-control" placeholder="Hal. Sinigang na Baboy" required>
                 </div>
-              </td>
-            </tr>
-          {% else %}
-            <tr>
-              <td colspan="7" class="text-center py-5 text-muted">No items in the menu. Add one above!</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Kategorya:</label>
+                    <select name="category" class="form-select" required>
+                        <option value="Meals">Meals</option>
+                        <option value="Snacks">Snacks</option>
+                        <option value="Drinks">Drinks</option>
+                        <option value="Desserts">Desserts</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Presyo (₱):</label>
+                    <input type="number" step="any" min="1" name="price" class="form-control" placeholder="65.00" required>
+                </div>
+                <div class="mb-4">
+                    <label class="form-label small fw-semibold">Maikling Deskripsyon:</label>
+                    <textarea name="description" class="form-control" rows="2" placeholder="Masarap at bagong luto..."></textarea>
+                </div>
+                <button type="submit" class="btn btn-cmdi-orange w-100 py-2 rounded-pill fw-bold">
+                    <i class="fa-solid fa-floppy-disk me-1"></i> I-Save sa Menu
+                </button>
+            </form>
+        </div>
     </div>
-  </div>
+
+    <div class="col-lg-8">
+        <div class="card card-custom p-4 shadow-sm">
+            <h4 class="fw-bold mb-3" style="color: var(--cmdi-blue);">Kasalukuyang Menu ng Canteen</h4>
+            <div class="table-responsive">
+                <table class="table align-middle">
+                    <thead>
+                        <tr class="text-muted small">
+                            <th>ID</th>
+                            <th>Pangalan</th>
+                            <th>Kategorya</th>
+                            <th>Presyo</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for it in items %}
+                        <tr>
+                            <td>#{{ it.id }}</td>
+                            <td class="fw-bold" style="color: var(--cmdi-blue);">{{ it.name }}</td>
+                            <td><span class="badge bg-light text-dark border">{{ it.category }}</span></td>
+                            <td class="fw-bold" style="color: var(--cmdi-orange);">₱{{ '%.2f'|format(it.price) }}</td>
+                            <td><span class="badge bg-success">Available</span></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
